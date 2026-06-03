@@ -1,0 +1,6 @@
+# Enforce LF line endings in the repository for all text files,
+# and check them out as LF too (no CRLF conversion on Windows).
+* text=auto eol=lf
+
+# Binaries must never be line-ending converted.
+*.exe binary

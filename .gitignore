@@ -1,0 +1,13 @@
+# Build artifacts
+/bin/
+/anytype-extension-mcp
+/anytype-extension-mcp.exe
+*.exe
+
+# Go
+vendor/
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp

@@ -1,0 +1,37 @@
+anytype-extension-mcp
+Copyright (c) 2026 mlett-dev
+
+This product is licensed under the MIT License (see LICENSE).
+
+------------------------------------------------------------------------
+Third-party dependencies
+------------------------------------------------------------------------
+
+This program is built against the modules listed below. Their source code is
+NOT included in this repository; they are resolved as Go module dependencies
+at build time (see go.mod). However, COMPILED BINARIES of this program
+(including Docker images) statically link the code below and are therefore
+subject to its license terms.
+
+1. github.com/anyproto/anytype-heart
+   Any Source Available License 1.0
+   https://github.com/anyproto/anytype-heart/blob/main/LICENSE.md
+
+   IMPORTANT: The Any Source Available License permits use, modification, and
+   redistribution only (a) for Non-Commercial Use, or (b) for Commercial Use
+   in Allowed Networks. If you distribute compiled binaries of this program,
+   that distribution is subject to these terms, and you must provide a copy of
+   that license to recipients.
+
+   Only the gRPC file tools (file-upload / file-download and their -many
+   variants) depend on anytype-heart's generated protobuf packages (pb,
+   pb/service, pkg/lib/pb/model). The REST "-compact" tools do not.
+
+2. github.com/anyproto/anytype-cli
+   MIT License - Copyright (c) 2023 Any Association
+   https://github.com/anyproto/anytype-cli/blob/main/LICENSE.md
+
+   No anytype-cli source code is included or redistributed here. The bundled
+   gRPC client (client.go) is original code; only the gRPC default
+   address value and the keyring service name ("anytype-cli", for
+   interoperability with "anytype-cli login") were derived from it.
