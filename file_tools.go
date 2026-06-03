@@ -38,7 +38,7 @@ func (s *mcpServer) toolInfo(args map[string]any) (map[string]any, error) {
 			},
 			"examples": []string{
 				"test-upload.txt",
-				"Unterlagen/überblick.pdf",
+				"reports/resume final.pdf",
 				"/data/in/test-upload.txt",
 			},
 		},

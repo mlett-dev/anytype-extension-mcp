@@ -1,8 +1,8 @@
 # anytype-extension-mcp
 
-Minimaler MCP-STDIO-Server fuer Anytype Dateioperationen ueber gRPC und kompakte REST-Wrapper fuer grosse Anytype API Antworten.
+Minimal MCP STDIO server for Anytype file operations over gRPC, plus compact REST wrappers for large Anytype API responses.
 
-Der Server ist als Sidecar zum offiziellen Anytype MCP gedacht. Tool-Namen orientieren sich am offiziellen Schema und nutzen fuer kompakte REST-Wrapper das Suffix `-compact`.
+The server is meant as a sidecar to the official Anytype MCP. Tool names follow the official schema; compact REST wrappers use the `-compact` suffix.
 
 - `file-upload`
 - `file-download`
@@ -24,54 +24,54 @@ Der Server ist als Sidecar zum offiziellen Anytype MCP gedacht. Tool-Namen orien
 - `get-type-compact`
 - `get-list-views-compact`
 
-## Umgebung
+## Environment
 
-Der Server liest folgende Umgebungsvariablen:
+The server reads the following environment variables:
 
 - `ANYTYPE_GRPC_ADDR` (default: `dns:///127.0.0.1:31010`)
-- `ANYTYPE_SESSION_TOKEN` (Token fuer die gRPC-Datei-Tools)
+- `ANYTYPE_SESSION_TOKEN` (token for the gRPC file tools)
 - `ANYTYPE_TIMEOUT` (default: `30s`)
 - `ANYTYPE_API_BASE_URL` (default: `http://127.0.0.1:31012`)
-- `ANYTYPE_API_KEY` (Pflicht fuer `*-compact` REST-Tools)
+- `ANYTYPE_API_KEY` (required for `*-compact` REST tools)
 - `ANYTYPE_API_VERSION` (default: `2025-11-08`)
 - `ANYTYPE_FILES_IN_ROOT` (default: `/data/in`)
 - `ANYTYPE_FILES_OUT_ROOT` (default: `/data/out`)
 
-### Session-Token
+### Session token
 
-Die gRPC-Datei-Tools brauchen einen Session-Token. Reihenfolge:
+The gRPC file tools need a session token. Resolution order:
 
-1. `ANYTYPE_SESSION_TOKEN`, falls gesetzt (hat Vorrang).
-2. Sonst der OS-Keyring (Service `anytype-cli`, User `session-token`), wie ihn
-   `anytype-cli login` ablegt.
+1. `ANYTYPE_SESSION_TOKEN`, if set (takes precedence).
+2. Otherwise the OS keyring (service `anytype-cli`, user `session-token`), as
+   stored by `anytype-cli login`.
 
-In Containern oder headless-Umgebungen ohne Secret-Service/DBus gibt es keinen
-Keyring &ndash; dort `ANYTYPE_SESSION_TOKEN` setzen. Die REST-`*-compact`-Tools
-nutzen stattdessen `ANYTYPE_API_KEY` und brauchen keinen Token.
+In containers or headless environments without a Secret Service / DBus there is
+no keyring &ndash; set `ANYTYPE_SESSION_TOKEN` there. The REST `*-compact` tools
+use `ANYTYPE_API_KEY` instead and do not need a token.
 
 ## Tool: file-upload
 
-Pflichtfelder:
+Required fields:
 
 - `space_id`
-- `staged_path` (muss unter `ANYTYPE_FILES_IN_ROOT` liegen)
+- `staged_path` (must be located under `ANYTYPE_FILES_IN_ROOT`)
 
-Optionale Felder:
+Optional fields:
 
 - `type`: `file|image|video|audio|none`
 - `style`: `auto|link|embed`
 
 ## Tool: file-download
 
-Pflichtfelder:
+Required fields:
 
 - `object_id`
 
 Optional:
 
-- `target_name` (nur Dateiname, kein Pfad)
+- `target_name` (filename only, no path)
 
-Download-Ziel ist immer `ANYTYPE_FILES_OUT_ROOT`.
+The download target is always `ANYTYPE_FILES_OUT_ROOT`.
 
 ## Compact property updates
 
@@ -115,24 +115,24 @@ For `get-objects-compact-many`, `update-objects-compact-many`, and `create-objec
 - Use `get-list-views-compact` to find a collection/set `view_id`, then `get-list-objects-compact` to fetch rows from that view.
 - `filters` on list/search tools are raw URL query parameters for the REST endpoint, not Notion-style or Anytype view filter definitions.
 
-## Lokal bauen (statisch)
+## Build locally (static)
 
 ```bash
 CGO_ENABLED=0 go build -buildvcs=false -trimpath -o ./bin/anytype-extension-mcp .
 ```
 
-## Docker Build (statisch)
+## Docker build (static)
 
 ```bash
 docker build -t anytype-extension-mcp:local .
 ```
 
-## Lizenz
+## License
 
-Eigener Code steht unter der MIT-Lizenz (siehe `LICENSE`).
+This project's own code is licensed under the MIT License (see `LICENSE`).
 
-Die gRPC-Datei-Tools haengen von `github.com/anyproto/anytype-heart` ab, das
-unter der **Any Source Available License 1.0** steht (nur Non-Commercial bzw.
-Allowed Networks). Das Quell-Repo referenziert anytype-heart nur ueber `go.mod`,
-aber **kompilierte Binaries/Docker-Images** linken dessen Code und unterliegen
-damit dessen Lizenzbedingungen. Details in `NOTICE`.
+The gRPC file tools depend on `github.com/anyproto/anytype-heart`, which is
+licensed under the **Any Source Available License 1.0** (Non-Commercial use or
+Commercial use in Allowed Networks only). This source repository only references
+anytype-heart via `go.mod`, but **compiled binaries / Docker images** link its
+code and are therefore subject to its license terms. See `NOTICE` for details.

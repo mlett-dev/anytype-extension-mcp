@@ -7,20 +7,20 @@ func TestCompactPropertiesMatchesKeyIDAndName(t *testing.T) {
 		map[string]any{
 			"id":     "prop-id",
 			"key":    "date",
-			"name":   "Datum",
+			"name":   "Date",
 			"format": "date",
 			"date":   map[string]any{"start": "2026-04-25"},
 		},
 		map[string]any{
 			"id":     "amount-id",
 			"key":    "amount",
-			"name":   "Betrag",
+			"name":   "Amount",
 			"format": "number",
 			"number": 12.5,
 		},
 	}
 
-	props := compactProperties(raw, asStringSet([]string{"Datum", "amount-id"}), 20, 500)
+	props := compactProperties(raw, asStringSet([]string{"Date", "amount-id"}), 20, 500)
 	if len(props) != 2 {
 		t.Fatalf("expected 2 matched properties, got %d: %#v", len(props), props)
 	}
@@ -37,12 +37,12 @@ func TestCompactPropertiesMatchesCaseInsensitiveName(t *testing.T) {
 		map[string]any{
 			"id":   "invoice-id",
 			"key":  "invoice",
-			"name": "Rechnung",
+			"name": "Invoice",
 			"url":  "https://example.test/invoice.pdf",
 		},
 	}
 
-	props := compactProperties(raw, asStringSet([]string{"rechnung"}), 20, 500)
+	props := compactProperties(raw, asStringSet([]string{"invoice"}), 20, 500)
 	if _, ok := props["invoice"]; !ok {
 		t.Fatalf("expected lowercase selector to match visible name: %#v", props)
 	}
@@ -50,18 +50,18 @@ func TestCompactPropertiesMatchesCaseInsensitiveName(t *testing.T) {
 
 func TestCompactPropertiesHandlesMapPayload(t *testing.T) {
 	raw := map[string]any{
-		"auto": map[string]any{
-			"name": "Auto",
-			"text": "VW",
+		"car": map[string]any{
+			"name": "Car",
+			"text": "Tesla",
 		},
 	}
 
-	props := compactProperties(raw, asStringSet([]string{"Auto"}), 20, 500)
-	entry, ok := props["auto"].(map[string]any)
+	props := compactProperties(raw, asStringSet([]string{"Car"}), 20, 500)
+	entry, ok := props["car"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected map payload property to be returned: %#v", props)
 	}
-	if entry["value"] != "VW" {
+	if entry["value"] != "Tesla" {
 		t.Fatalf("expected text value to be preserved, got %#v", entry["value"])
 	}
 }
@@ -93,12 +93,12 @@ func TestCompactPropertyDefinitionsDoNotAddValue(t *testing.T) {
 			"object": "property",
 			"id":     "amount-id",
 			"key":    "amount",
-			"name":   "Betrag",
+			"name":   "Amount",
 			"format": "number",
 		},
 	}
 
-	props := compactPropertyDefinitions(raw, asStringSet([]string{"Betrag"}), 20, 500)
+	props := compactPropertyDefinitions(raw, asStringSet([]string{"Amount"}), 20, 500)
 	entry, ok := props["amount"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected property definition to be returned: %#v", props)
