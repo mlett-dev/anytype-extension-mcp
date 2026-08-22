@@ -298,6 +298,24 @@ Only IDs the run created itself are deleted; leftovers found by name prefix are
 archived but never deleted, because a matching name is not proof that an object
 came from a test.
 
+## Before you commit
+
+This repository is public and every push is immediate, so a pre-commit check
+scans staged content for things that should not be published — credentials,
+absolute home directories, real content IDs, non-loopback addresses:
+
+```bash
+scripts/check-private.sh          # staged content, what a commit would record
+scripts/check-private.sh --all    # the whole working tree
+
+git config core.hooksPath .githooks   # or install it as a pre-commit hook
+```
+
+Installation-specific strings — host paths, container names, space names —
+belong in a git-ignored `.private-patterns` file (one extended regex per line),
+not in the script itself: writing them there would publish exactly what they
+are meant to keep out.
+
 ## Build locally (static)
 
 ```bash

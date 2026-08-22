@@ -13,3 +13,6 @@ vendor/
 *.swp
 /mcp-check
 __pycache__/
+
+# Lokale Deny-Liste für scripts/check-private.sh — nie committen
+.private-patterns
