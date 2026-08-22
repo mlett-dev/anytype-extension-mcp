@@ -23,9 +23,27 @@ subject to its license terms.
    that distribution is subject to these terms, and you must provide a copy of
    that license to recipients.
 
-   Only the gRPC file tools (file-upload / file-download and their -many
-   variants) depend on anytype-heart's generated protobuf packages (pb,
-   pb/service, pkg/lib/pb/model). The REST "-compact" tools do not.
+   SCOPE. Every gRPC-backed tool depends on anytype-heart's generated
+   packages (pb, pb/service, pkg/lib/pb/model, core/domain). That is the
+   large majority of the 129 tools: blocks, queries and views, tables,
+   space operations, transfer and versions, usage analysis, covers and
+   the gRPC file tools.
+
+   The dependency is confined to the "anytypefiles" package; no file in
+   the root package imports anytype-heart. The REST tools -- the plain
+   REST wrappers and the "-compact" variants -- therefore do not depend
+   on it.
+
+   ALLOWED NETWORKS. https://networks.any.coop lists the networks that
+   qualify for Commercial Use. A self-hosted any-sync network is not on
+   that list, so against a self-hosted instance only Non-Commercial Use
+   is licensed. This applies to recipients of compiled binaries as much
+   as to the distributor.
+
+   RELICENSING. The MIT license on this project covers this project's own
+   code only. anytype-heart code linked into a compiled artifact stays
+   under the Any Source Available License 1.0 and cannot be redistributed
+   under MIT.
 
 2. github.com/anyproto/anytype-cli
    MIT License - Copyright (c) 2023 Any Association
