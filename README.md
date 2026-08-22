@@ -94,6 +94,14 @@ anytype-heart build it is connected to. The MCP handshake carries a version
 too, but connectors keep that to themselves, and the answer decides which
 behaviours to expect — so it is also a tool.
 
+## Why the tools work the way they do
+
+`docs/anytype-heart-notes.md` records verified anytype-heart behaviour — an RPC
+that reports success and does nothing, a write invisible to the next read, a
+filter that silently matches everything. Most of the roundabout-looking choices
+in this server trace back to an entry there, and the entries are expensive to
+rediscover.
+
 ## IDs, not keys, in path parameters
 
 `property_id`, `type_id` and `tag_id` require the `bafyrei…` ID, **not** the
