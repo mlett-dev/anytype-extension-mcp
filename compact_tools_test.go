@@ -7,20 +7,20 @@ func TestCompactPropertiesMatchesKeyIDAndName(t *testing.T) {
 		map[string]any{
 			"id":     "prop-id",
 			"key":    "date",
-			"name":   "Date",
+			"name":   "Datum",
 			"format": "date",
 			"date":   map[string]any{"start": "2026-04-25"},
 		},
 		map[string]any{
 			"id":     "amount-id",
 			"key":    "amount",
-			"name":   "Amount",
+			"name":   "Betrag",
 			"format": "number",
 			"number": 12.5,
 		},
 	}
 
-	props := compactProperties(raw, asStringSet([]string{"Date", "amount-id"}), 20, 500)
+	props := compactProperties(raw, asStringSet([]string{"Datum", "amount-id"}), 20, 500)
 	if len(props) != 2 {
 		t.Fatalf("expected 2 matched properties, got %d: %#v", len(props), props)
 	}
@@ -37,12 +37,12 @@ func TestCompactPropertiesMatchesCaseInsensitiveName(t *testing.T) {
 		map[string]any{
 			"id":   "invoice-id",
 			"key":  "invoice",
-			"name": "Invoice",
+			"name": "Rechnung",
 			"url":  "https://example.test/invoice.pdf",
 		},
 	}
 
-	props := compactProperties(raw, asStringSet([]string{"invoice"}), 20, 500)
+	props := compactProperties(raw, asStringSet([]string{"rechnung"}), 20, 500)
 	if _, ok := props["invoice"]; !ok {
 		t.Fatalf("expected lowercase selector to match visible name: %#v", props)
 	}
@@ -50,18 +50,18 @@ func TestCompactPropertiesMatchesCaseInsensitiveName(t *testing.T) {
 
 func TestCompactPropertiesHandlesMapPayload(t *testing.T) {
 	raw := map[string]any{
-		"car": map[string]any{
-			"name": "Car",
-			"text": "Tesla",
+		"auto": map[string]any{
+			"name": "Auto",
+			"text": "VW",
 		},
 	}
 
-	props := compactProperties(raw, asStringSet([]string{"Car"}), 20, 500)
-	entry, ok := props["car"].(map[string]any)
+	props := compactProperties(raw, asStringSet([]string{"Auto"}), 20, 500)
+	entry, ok := props["auto"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected map payload property to be returned: %#v", props)
 	}
-	if entry["value"] != "Tesla" {
+	if entry["value"] != "VW" {
 		t.Fatalf("expected text value to be preserved, got %#v", entry["value"])
 	}
 }
@@ -93,12 +93,12 @@ func TestCompactPropertyDefinitionsDoNotAddValue(t *testing.T) {
 			"object": "property",
 			"id":     "amount-id",
 			"key":    "amount",
-			"name":   "Amount",
+			"name":   "Betrag",
 			"format": "number",
 		},
 	}
 
-	props := compactPropertyDefinitions(raw, asStringSet([]string{"Amount"}), 20, 500)
+	props := compactPropertyDefinitions(raw, asStringSet([]string{"Betrag"}), 20, 500)
 	entry, ok := props["amount"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected property definition to be returned: %#v", props)
@@ -140,12 +140,15 @@ func TestCreateObjectRequestBodyCopiesAllowedFields(t *testing.T) {
 }
 
 func TestUpdateObjectRequestBodyCopiesAllowedFields(t *testing.T) {
-	body := updateObjectRequestBody(map[string]any{
+	body, err := updateObjectRequestBody(map[string]any{
 		"object_id": "object-id",
 		"name":      "Updated",
 		"markdown":  "Body",
 		"ignored":   "value",
 	})
+	if err != nil {
+		t.Fatalf("expected update body to be valid: %v", err)
+	}
 	if body["name"] != "Updated" || body["markdown"] != "Body" {
 		t.Fatalf("expected allowed update fields to be copied, got %#v", body)
 	}
@@ -154,5 +157,54 @@ func TestUpdateObjectRequestBodyCopiesAllowedFields(t *testing.T) {
 	}
 	if _, ok := body["ignored"]; ok {
 		t.Fatalf("expected unknown field to be omitted: %#v", body)
+	}
+}
+
+func TestValidatePropertyLinks(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     any
+		wantErr bool
+	}{
+		{"absent", nil, false},
+		{"one field", []any{map[string]any{"key": "done", "checkbox": false}}, false},
+		{"empty array clears", []any{map[string]any{"key": "tag", "multi_select": []any{}}}, false},
+		{"no value field", []any{map[string]any{"key": "tag"}}, true},
+		{"value instead of a typed field", []any{map[string]any{"key": "tag", "value": nil}}, true},
+		// The one heart accepts and half-executes: it would keep text and drop
+		// number, and answer 200.
+		{"two value fields", []any{map[string]any{"key": "foo", "text": "abc", "number": 123}}, true},
+		{"not a list", map[string]any{"key": "tag"}, true},
+		{"entry not an object", []any{"tag"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validatePropertyLinks(tc.raw)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected an error for %#v", tc.raw)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %#v to pass, got %v", tc.raw, err)
+			}
+		})
+	}
+}
+
+func TestUpdateObjectRequestBodyRejectsAmbiguousProperty(t *testing.T) {
+	_, err := updateObjectRequestBody(map[string]any{
+		"properties": []any{map[string]any{"key": "foo", "text": "abc", "number": 123}},
+	})
+	if err == nil {
+		t.Fatal("expected two typed value fields to be refused before the request is sent")
+	}
+}
+
+func TestCreateObjectRequestBodyRejectsValuelessProperty(t *testing.T) {
+	_, err := createObjectRequestBody(map[string]any{
+		"type_key":   "page",
+		"properties": []any{map[string]any{"key": "tag"}},
+	})
+	if err == nil {
+		t.Fatal("expected a property without a typed value field to be refused")
 	}
 }

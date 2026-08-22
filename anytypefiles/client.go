@@ -1,4 +1,4 @@
-package main
+package anytypefiles
 
 import (
 	"context"
@@ -206,4 +206,19 @@ func ParseFileStyle(value string) (model.BlockContentFileStyle, error) {
 	default:
 		return 0, fmt.Errorf("invalid style %q (expected: auto|link|embed)", value)
 	}
+}
+
+// AppVersion reports the version of the anytype-heart server this client is
+// talking to, which is what decides which quirks apply.
+func (c *Client) AppVersion(ctx context.Context) (string, string, error) {
+	callCtx, cancel := c.contextWithAuth(ctx)
+	defer cancel()
+	resp, err := c.rpc.AppGetVersion(callCtx, &pb.RpcAppGetVersionRequest{})
+	if err != nil {
+		return "", "", fmt.Errorf("gRPC AppGetVersion failed: %w", err)
+	}
+	if resp.Error != nil && resp.Error.Code != pb.RpcAppGetVersionResponseError_NULL {
+		return "", "", fmt.Errorf("AppGetVersion error (%s): %s", resp.Error.Code, resp.Error.Description)
+	}
+	return resp.Version, resp.Details, nil
 }

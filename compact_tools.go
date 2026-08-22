@@ -269,11 +269,9 @@ func (s *mcpServer) toolObjectUpdateCompact(args map[string]any) (map[string]any
 		return nil, err
 	}
 
-	body := map[string]any{}
-	for _, key := range []string{"icon", "markdown", "name", "properties", "type_key"} {
-		if value, ok := args[key]; ok {
-			body[key] = value
-		}
+	body, err := updateObjectRequestBody(args)
+	if err != nil {
+		return nil, err
 	}
 	if len(body) == 0 {
 		return nil, fmt.Errorf("at least one update field is required: icon, markdown, name, properties, type_key")
@@ -332,7 +330,19 @@ func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[strin
 			continue
 		}
 
-		body := updateObjectRequestBody(item)
+		body, err := updateObjectRequestBody(item)
+		if err != nil {
+			results = append(results, map[string]any{
+				"index":     i,
+				"object_id": objectID,
+				"error":     err.Error(),
+			})
+			errorCount++
+			if stopOnError {
+				break
+			}
+			continue
+		}
 		if len(body) == 0 {
 			results = append(results, map[string]any{
 				"index":     i,
@@ -397,6 +407,9 @@ func createObjectRequestBody(args map[string]any) (map[string]any, error) {
 	if _, err := requiredString(args, "type_key"); err != nil {
 		return nil, err
 	}
+	if err := validatePropertyLinks(args["properties"]); err != nil {
+		return nil, err
+	}
 	body := map[string]any{}
 	for _, key := range []string{"body", "icon", "name", "properties", "template_id", "type_key"} {
 		if value, ok := args[key]; ok {
@@ -406,14 +419,17 @@ func createObjectRequestBody(args map[string]any) (map[string]any, error) {
 	return body, nil
 }
 
-func updateObjectRequestBody(args map[string]any) map[string]any {
+func updateObjectRequestBody(args map[string]any) (map[string]any, error) {
+	if err := validatePropertyLinks(args["properties"]); err != nil {
+		return nil, err
+	}
 	body := map[string]any{}
 	for _, key := range []string{"icon", "markdown", "name", "properties", "type_key"} {
 		if value, ok := args[key]; ok {
 			body[key] = value
 		}
 	}
-	return body
+	return body, nil
 }
 
 func (s *mcpServer) toolSearchCompact(args map[string]any, requireSpace bool) (map[string]any, error) {
@@ -556,6 +572,13 @@ func (s *mcpServer) toolGetTypeCompact(args map[string]any) (map[string]any, err
 		return nil, err
 	}
 	opts := parseTypeCompactOptions(args)
+	// A type's properties ARE its definition, and there are only a handful of
+	// them, so fetching one type and getting no properties back is nearly
+	// useless. They default to on here; list-types-compact keeps them opt-in
+	// because that response multiplies them by the number of types.
+	if _, explicit := args["include_properties"]; !explicit {
+		opts.includeProperties = true
+	}
 	return map[string]any{
 		"space_id":     spaceID,
 		"type_id":      typeID,
@@ -796,7 +819,22 @@ func compactArray(raw any, limit int, maxStringLength int) []any {
 	return out
 }
 
+// anytypeAPIRequest returns the response as an object. A few endpoints answer
+// with a bare JSON string instead (the list add/remove endpoints reply e.g.
+// "Objects added successfully"), so non-object responses are wrapped under
+// "result" rather than failing to decode.
 func (s *mcpServer) anytypeAPIRequest(method string, path string, query url.Values, body any) (map[string]any, error) {
+	raw, err := s.anytypeAPIRequestAny(method, path, query, body)
+	if err != nil {
+		return nil, err
+	}
+	if obj, ok := raw.(map[string]any); ok {
+		return obj, nil
+	}
+	return map[string]any{"result": raw}, nil
+}
+
+func (s *mcpServer) anytypeAPIRequestAny(method string, path string, query url.Values, body any) (any, error) {
 	if s.cfg.apiKey == "" {
 		return nil, fmt.Errorf("ANYTYPE_API_KEY is required for compact Anytype REST tools")
 	}
@@ -840,7 +878,7 @@ func (s *mcpServer) anytypeAPIRequest(method string, path string, query url.Valu
 	defer resp.Body.Close()
 
 	limited := io.LimitReader(resp.Body, 64*1024*1024)
-	var payload map[string]any
+	var payload any
 	if err := json.NewDecoder(limited).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("failed to decode Anytype API response: %w", err)
 	}
@@ -914,6 +952,24 @@ func addFiltersQuery(query url.Values, args map[string]any) error {
 		addQueryValue(query, key, raw)
 	}
 	return nil
+}
+
+// withOverrides replaces individual entries of an already-built input schema.
+//
+// The compact*ToolSchema helpers are shared by several tools so that the common
+// options stay worded identically. Where one tool genuinely differs — a default
+// that is right for it and wrong for its neighbour — the entry is overridden
+// here rather than by forking the helper, which would let the shared wording
+// drift apart.
+func withOverrides(schema map[string]any, overrides map[string]any) map[string]any {
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return schema
+	}
+	for key, value := range overrides {
+		props[key] = value
+	}
+	return schema
 }
 
 func compactObjectToolSchema(required []string, properties map[string]any) map[string]any {
@@ -1425,4 +1481,79 @@ func asStringSet(values []string) map[string]bool {
 
 func normalizeSelector(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// propertyLinkValueFields are the typed value fields of a property-link entry,
+// in the order anytype-heart tries them.
+//
+// The order is not cosmetic: heart's PropertyLinkWithValue.UnmarshalJSON
+// (core/api/model/property.go) is a first-match switch over exactly these keys,
+// so an entry carrying two of them is not refused — heart silently takes the
+// first one in THIS order and drops the rest, and the write comes back 200 as
+// though everything had landed.
+var propertyLinkValueFields = []string{
+	"text", "number", "select", "multi_select", "date",
+	"files", "checkbox", "url", "email", "phone", "objects",
+}
+
+// validatePropertyLinks enforces the "key plus exactly one typed value field"
+// rule that the tool descriptions promise and nothing else checks.
+//
+// Both halves of the rule need a guard, for opposite reasons. Zero value fields
+// is caught by heart with a 400 ("could not determine property link value
+// type"), but only after a round trip and with no mention of which entry was
+// wrong. Two value fields is the dangerous half: heart accepts it, writes one
+// of them and discards the other without a word, so a caller that sends
+// {"key":"x","text":"a","number":1} is told it succeeded and loses the number.
+//
+// Presence is what counts, not the value: heart tests aux[field] != nil on a
+// map[string]json.RawMessage, where an explicit null is still a present key.
+// Matching that here keeps the two from disagreeing about what "sent" means.
+func validatePropertyLinks(raw any) error {
+	if raw == nil {
+		return nil
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("properties must be a list of {key, <one typed value field>} objects")
+	}
+	for i, element := range entries {
+		entry, ok := element.(map[string]any)
+		if !ok {
+			return fmt.Errorf("properties[%d]: must be an object with a key and one typed value field", i)
+		}
+		label := strconv.Itoa(i)
+		if key := stringValue(entry["key"]); key != "" {
+			label = fmt.Sprintf("%d (%q)", i, key)
+		}
+		present := make([]string, 0, 2)
+		for _, field := range propertyLinkValueFields {
+			if _, ok := entry[field]; ok {
+				present = append(present, field)
+			}
+		}
+		switch {
+		case len(present) == 1:
+			continue
+		case len(present) == 0:
+			extra := make([]string, 0, len(entry))
+			for field := range entry {
+				if field != "key" {
+					extra = append(extra, field)
+				}
+			}
+			sort.Strings(extra)
+			msg := fmt.Sprintf("properties[%s]: needs exactly one typed value field (%s)",
+				label, strings.Join(propertyLinkValueFields, ", "))
+			if len(extra) > 0 {
+				msg += fmt.Sprintf("; %s is not one of them", strings.Join(extra, ", "))
+			}
+			return fmt.Errorf("%s. Check the property's format with get-type-compact or list-properties", msg)
+		default:
+			return fmt.Errorf("properties[%s]: carries %d typed value fields (%s), but only one is allowed. "+
+				"Anytype would keep %q and discard the rest without an error — split them into one entry per property",
+				label, len(present), strings.Join(present, ", "), present[0])
+		}
+	}
+	return nil
 }

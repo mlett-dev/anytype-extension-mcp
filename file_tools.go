@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
 
 type listedEntry struct {
@@ -38,7 +40,7 @@ func (s *mcpServer) toolInfo(args map[string]any) (map[string]any, error) {
 			},
 			"examples": []string{
 				"test-upload.txt",
-				"reports/resume final.pdf",
+				"Unterlagen/überblick.pdf",
 				"/data/in/test-upload.txt",
 			},
 		},
@@ -50,6 +52,7 @@ func (s *mcpServer) toolInfo(args map[string]any) (map[string]any, error) {
 			},
 		},
 		"notes": []string{
+			"These roots are directories on the Anytype host, not on the caller's machine. A file the caller's runtime holds does not go through here at all: use file-stage-attachment, file-upload-attachment or object-set-cover-from-attachment, which take the file itself and let this server download it.",
 			"Use relative_path values returned by file-list-input exactly as returned.",
 			"Do not reconstruct filenames manually.",
 			"Spaces, umlauts, and other special characters are allowed and should be preserved exactly.",
@@ -117,7 +120,7 @@ func (s *mcpServer) toolUpload(args map[string]any) (map[string]any, error) {
 	if strings.TrimSpace(typeValue) == "" {
 		typeValue = "file"
 	}
-	fileType, err := ParseFileType(strings.TrimSpace(typeValue))
+	fileType, err := anytypefiles.ParseFileType(strings.TrimSpace(typeValue))
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +128,12 @@ func (s *mcpServer) toolUpload(args map[string]any) (map[string]any, error) {
 	if strings.TrimSpace(styleValue) == "" {
 		styleValue = "auto"
 	}
-	style, err := ParseFileStyle(strings.TrimSpace(styleValue))
+	style, err := anytypefiles.ParseFileStyle(strings.TrimSpace(styleValue))
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := NewClient(context.Background(), Config{
+	client, err := anytypefiles.NewClient(context.Background(), anytypefiles.Config{
 		GRPCAddress:  s.cfg.grpcAddr,
 		SessionToken: s.cfg.token,
 		Timeout:      s.cfg.timeout,
@@ -145,7 +148,7 @@ func (s *mcpServer) toolUpload(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("failed to map staged_path for server: %w", err)
 	}
 
-	uploadResp, err := client.UploadFile(context.Background(), UploadRequest{
+	uploadResp, err := client.UploadFile(context.Background(), anytypefiles.UploadRequest{
 		SpaceID:   spaceID,
 		LocalPath: serverPath,
 		Type:      fileType,
@@ -180,7 +183,7 @@ func (s *mcpServer) toolDownload(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("output root not usable: %w", err)
 	}
 
-	client, err := NewClient(context.Background(), Config{
+	client, err := anytypefiles.NewClient(context.Background(), anytypefiles.Config{
 		GRPCAddress:  s.cfg.grpcAddr,
 		SessionToken: s.cfg.token,
 		Timeout:      s.cfg.timeout,
@@ -195,7 +198,7 @@ func (s *mcpServer) toolDownload(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("server output root not usable: %w", err)
 	}
 
-	downloadResp, err := client.DownloadFile(context.Background(), DownloadRequest{
+	downloadResp, err := client.DownloadFile(context.Background(), anytypefiles.DownloadRequest{
 		ObjectID: objectID,
 		Path:     serverOutRoot,
 	})
@@ -271,7 +274,7 @@ func (s *mcpServer) toolUploadMany(args map[string]any) (map[string]any, error) 
 	}
 	stopOnError := optionalBool(args, "stop_on_error", false)
 
-	client, err := NewClient(context.Background(), Config{
+	client, err := anytypefiles.NewClient(context.Background(), anytypefiles.Config{
 		GRPCAddress:  s.cfg.grpcAddr,
 		SessionToken: s.cfg.token,
 		Timeout:      s.cfg.timeout,
@@ -326,7 +329,7 @@ func (s *mcpServer) toolUploadMany(args map[string]any) (map[string]any, error) 
 			styleValue = defaultStyle
 		}
 
-		fileType, err := ParseFileType(strings.TrimSpace(typeValue))
+		fileType, err := anytypefiles.ParseFileType(strings.TrimSpace(typeValue))
 		if err != nil {
 			results = append(results, map[string]any{
 				"index":       i,
@@ -340,7 +343,7 @@ func (s *mcpServer) toolUploadMany(args map[string]any) (map[string]any, error) 
 			continue
 		}
 
-		style, err := ParseFileStyle(strings.TrimSpace(styleValue))
+		style, err := anytypefiles.ParseFileStyle(strings.TrimSpace(styleValue))
 		if err != nil {
 			results = append(results, map[string]any{
 				"index":       i,
@@ -368,7 +371,7 @@ func (s *mcpServer) toolUploadMany(args map[string]any) (map[string]any, error) 
 			continue
 		}
 
-		uploadResp, err := client.UploadFile(context.Background(), UploadRequest{
+		uploadResp, err := client.UploadFile(context.Background(), anytypefiles.UploadRequest{
 			SpaceID:   spaceID,
 			LocalPath: serverPath,
 			Type:      fileType,
@@ -432,7 +435,7 @@ func (s *mcpServer) toolDownloadMany(args map[string]any) (map[string]any, error
 		return nil, fmt.Errorf("server output root not usable: %w", err)
 	}
 
-	client, err := NewClient(context.Background(), Config{
+	client, err := anytypefiles.NewClient(context.Background(), anytypefiles.Config{
 		GRPCAddress:  s.cfg.grpcAddr,
 		SessionToken: s.cfg.token,
 		Timeout:      s.cfg.timeout,
@@ -476,7 +479,7 @@ func (s *mcpServer) toolDownloadMany(args map[string]any) (map[string]any, error
 			}
 		}
 
-		downloadResp, err := client.DownloadFile(context.Background(), DownloadRequest{
+		downloadResp, err := client.DownloadFile(context.Background(), anytypefiles.DownloadRequest{
 			ObjectID: objectID,
 			Path:     serverOutRoot,
 		})
