@@ -11,3 +11,5 @@ vendor/
 .DS_Store
 .idea/
 *.swp
+/mcp-check
+__pycache__/
