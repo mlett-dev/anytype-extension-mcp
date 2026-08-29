@@ -35,7 +35,7 @@ func (s *mcpServer) blockToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name":        "block-list",
-			"description": "Read the block structure of an object: every block with its id, kind, style, text, checkbox state, inline marks, callout emoji and children, plus card_style, icon_size, description and property_keys for link blocks, property_key for relation blocks, target_object_id for embedded queries, and width for page columns. Call this before any block edit — all other block tools need the ids from here. Unlike get-object-compact with markdown, this preserves block identity and checkbox state.",
+			"description": "Read the block structure of an object: every block with its id, kind, style, text, checkbox state, inline marks, callout emoji and children, plus card_style, icon_size, description and property_keys for link blocks, property_key for relation blocks, target_object_id for embedded queries, and width for page columns. Call this before any block edit — all other block tools need the ids from here. Unlike get-object-compact with markdown, this preserves block identity and checkbox state.\n\nStyles and mark types come back under the same names the writing tools accept, so a value read here can be passed straight back. The one exception is style=title, the object's name block, which block-turn-into deliberately does not take.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Object whose blocks to read."),
@@ -44,7 +44,7 @@ func (s *mcpServer) blockToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "block-create",
-			"description": "Insert a block into an object. kind=text covers paragraphs, headings, quotes, code, checkboxes, bullet and numbered lists, toggles and callouts; the other kinds insert a link to another object, a web bookmark, a divider or a table. Appends to the end unless target_id and position say otherwise. position=left or right puts the new block into a page column beside target_id instead of above or below it.",
+			"description": "Insert a block into an object. kind=text covers paragraphs, headings, quotes, code, checkboxes, bullet and numbered lists, toggles and callouts; the other kinds insert a link to another object, a web bookmark, a divider or a table. Appends to the end unless target_id and position say otherwise. position=left or right puts the new block into a page column beside target_id instead of above or below it. Unlike block-move, position=inner is not checked against the target: this nests under a plain heading too, which block-move refuses unless convert_target_to_toggle is passed.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":      spaceIDProp(),
 				"object_id":     strProp("Object to insert into."),
@@ -84,7 +84,7 @@ func (s *mcpServer) blockToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "block-turn-into",
-			"description": "Change the style of text blocks, e.g. turn paragraphs into a heading or a checklist. Text and marks are kept.",
+			"description": "Change the style of text blocks, e.g. turn paragraphs into a heading or a checklist. Text and marks are kept.\n\nThe style in the answer is the one block-list will report, which is not always the word you sent: bulleted and marked are the same style, and so are checkbox and todo.",
 			"inputSchema": restSchema([]string{"space_id", "object_id", "block_ids", "style"}, map[string]any{
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Object containing the blocks."),
@@ -125,7 +125,7 @@ func (s *mcpServer) blockToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "block-move",
-			"description": "Move blocks within an object, or into a different object. Use position=inner to nest them under the drop target. Within one object the blocks keep their ids; moving into ANOTHER object re-creates them there under new ids, which are returned as moved_block_ids — the ids you passed in are dead after that.\n\nposition=left or right is how a page gets COLUMNS: anytype wraps the drop target and the moved block into a row and puts each into its own column, the same structure dragging a block beside another one produces. Repeat it to add further columns. This is the way to lay two embedded queries out side by side.",
+			"description": "Move blocks within an object, or into a different object. Use position=inner to nest them under the drop target. Within one object the blocks keep their ids; moving into ANOTHER object re-creates them there under new ids, which are returned as moved_block_ids — the ids you passed in are dead after that.\n\nposition=left or right is how a page gets COLUMNS: anytype wraps the drop target and the moved block into a row and puts each into its own column, the same structure dragging a block beside another one produces. Repeat it to add further columns. This is the way to lay two embedded queries out side by side.\n\nposition=inner needs a drop target that can hold children: paragraph, quote, checkbox, bulleted, numbered, toggle, callout and toggle_header1/2/3. A heading, code or description block is refused, and the error names the styles that would work. For header1, header2 and header3 pass convert_target_to_toggle=true and the move goes through: the target becomes the matching toggle_header first and every block id survives. block-create does NOT enforce this and will nest under a plain heading.",
 			"inputSchema": restSchema([]string{"space_id", "object_id", "block_ids", "drop_target_id"}, map[string]any{
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Object the blocks currently live in."),
@@ -137,6 +137,11 @@ func (s *mcpServer) blockToolDefs() []any {
 				"drop_target_id":   strProp("Block id to drop next to, inside the target object."),
 				"position":         enumProp("Where to place them relative to drop_target_id. Defaults to bottom. left and right put the blocks into a page column beside the target, which is how a page is split into columns.", anytypefiles.BlockPositionNames()),
 				"target_object_id": strProp("Object to move into. Omit to move within the same object."),
+				"convert_target_to_toggle": map[string]any{
+					"type":        "boolean",
+					"description": "For position=inner or inner_first onto a heading: turn the drop target into the matching toggle_header first, then move. This is the hand operation in the GUI, and it stays a move — the block ids are kept. Only header1, header2 and header3 have a counterpart; header4, code and description have none and are still refused. Ignored when the target already takes children. The conversion is reported as converted_target and is NOT undone if the move then fails.",
+					"default":     false,
+				},
 			}),
 		},
 		map[string]any{
@@ -345,6 +350,59 @@ func blockIDSet(client *anytypefiles.Client, spaceID, objectID string) (map[stri
 		out[b.ID] = true
 	}
 	return out, nil
+}
+
+// prepareInnerDropTarget vets the drop target of an inner move before the RPC
+// goes out, and optionally makes it fit.
+//
+// Both halves exist because heart's own message — "cannot move to block that
+// cannot have children" — names neither the styles that would work nor the way
+// out, so a caller can only guess. With convert=true it does what a user does
+// by hand: turn a heading into the matching toggle_header. A move must keep
+// block ids, so recreating the moved blocks under the heading is never an
+// option, but changing the target's own style leaves every id alone.
+//
+// Reports the new style of the target, or "" when nothing was changed.
+func prepareInnerDropTarget(client *anytypefiles.Client, spaceID, objectID, dropTargetID string, convert bool) (string, error) {
+	blocks, _, err := client.ReadBlocks(context.Background(), spaceID, objectID)
+	if err != nil {
+		return "", err
+	}
+	var target *anytypefiles.BlockInfo
+	for i := range blocks {
+		if blocks[i].ID == dropTargetID {
+			target = &blocks[i]
+			break
+		}
+	}
+	// An id this read does not know is left to heart rather than refused here:
+	// this check exists to give a better message, not to add a new way to fail.
+	if target == nil {
+		return "", nil
+	}
+	// Non-text targets are not subject to the rule at all, and a style that
+	// already takes children needs no help.
+	if target.Kind != "text" || anytypefiles.StyleCanHaveChildren(target.Style) {
+		return "", nil
+	}
+
+	toggle, hasToggle := anytypefiles.ToggleEquivalent(target.Style)
+	if !convert {
+		hint := "there is no style it can be converted to"
+		if hasToggle {
+			hint = fmt.Sprintf("pass convert_target_to_toggle=true to turn it into %s first, which keeps every block id", toggle)
+		}
+		return "", fmt.Errorf("drop target %s has style %s, which cannot hold children; only paragraph, quote, checkbox, bulleted, numbered, toggle, callout and toggle_header1/2/3 can — %s",
+			dropTargetID, target.Style, hint)
+	}
+	if !hasToggle {
+		return "", fmt.Errorf("drop target %s has style %s, which cannot hold children and has no toggle counterpart; only header1, header2 and header3 can be converted",
+			dropTargetID, target.Style)
+	}
+	if err := client.TurnBlocksInto(context.Background(), objectID, []string{dropTargetID}, toggle); err != nil {
+		return "", fmt.Errorf("converting the drop target to %s failed: %w", toggle, err)
+	}
+	return toggle, nil
 }
 
 // newBlockIDs reports which ids of an object are not in the given snapshot.
@@ -587,9 +645,13 @@ func (s *mcpServer) toolBlockTurnInto(args map[string]any) (map[string]any, erro
 	if err := client.TurnBlocksInto(context.Background(), objectID, blockIDs, style); err != nil {
 		return nil, err
 	}
+	// Answer with the name block-list will report, not the alias the caller
+	// happened to send: a turn-into that echoed "bulleted" while the readback
+	// said "marked" looked like a write that had silently done nothing.
 	return map[string]any{
 		"space_id": spaceID, "object_id": objectID,
-		"block_ids": blockIDs, "style": style, "updated": true,
+		"block_ids": blockIDs, "style": anytypefiles.CanonicalTextStyle(style),
+		"updated": true,
 	}, nil
 }
 
@@ -647,7 +709,8 @@ func (s *mcpServer) toolBlockMark(args map[string]any) (map[string]any, error) {
 	}
 	return map[string]any{
 		"space_id": spaceID, "object_id": objectID, "block_ids": blockIDs,
-		"type": markType, "from": spec.From, "to": spec.To, "applied": true,
+		"type": anytypefiles.CanonicalMarkType(markType),
+		"from": spec.From, "to": spec.To, "applied": true,
 	}, nil
 }
 
@@ -669,6 +732,23 @@ func (s *mcpServer) toolBlockMove(args map[string]any) (map[string]any, error) {
 	targetObjectID := optionalString(args, "target_object_id")
 	crossObject := targetObjectID != "" && targetObjectID != objectID
 
+	position := optionalString(args, "position")
+	var convertedTarget string
+	if position == "inner" || position == "inner_first" {
+		// The drop target lives in the destination object, which is not
+		// necessarily the one the blocks come from.
+		host := targetObjectID
+		if host == "" {
+			host = objectID
+		}
+		converted, err := prepareInnerDropTarget(client, spaceID, host, dropTargetID,
+			optionalBool(args, "convert_target_to_toggle", false))
+		if err != nil {
+			return nil, err
+		}
+		convertedTarget = converted
+	}
+
 	// Moving into another object re-creates the blocks there under fresh ids,
 	// so the ids the caller passed in stop being valid. Snapshot the
 	// destination first to be able to name the new ones afterwards.
@@ -681,7 +761,13 @@ func (s *mcpServer) toolBlockMove(args map[string]any) (map[string]any, error) {
 	}
 
 	if err := client.MoveBlocks(context.Background(), objectID, blockIDs,
-		targetObjectID, dropTargetID, optionalString(args, "position")); err != nil {
+		targetObjectID, dropTargetID, position); err != nil {
+		// The style change is already written at this point. Saying so is the
+		// difference between a caller that can undo it and one that does not
+		// know there is anything to undo.
+		if convertedTarget != "" {
+			return nil, fmt.Errorf("the drop target was converted to %s, but the move then failed: %w", convertedTarget, err)
+		}
 		return nil, err
 	}
 	if targetObjectID == "" {
@@ -690,6 +776,9 @@ func (s *mcpServer) toolBlockMove(args map[string]any) (map[string]any, error) {
 	out := map[string]any{
 		"space_id": spaceID, "object_id": objectID,
 		"target_object_id": targetObjectID, "moved": true,
+	}
+	if convertedTarget != "" {
+		out["converted_target"] = convertedTarget
 	}
 	if crossObject {
 		out["moved_block_ids"] = newBlockIDs(client, spaceID, targetObjectID, before)

@@ -411,6 +411,56 @@ scaffolding around them.
 `block-list` reports `width` on every column block — when absent, the columns
 share the row equally, which is exactly how Anytype stores that case.
 
+### Only `Move` checks whether the drop target can have children
+
+`canHaveChildren` (`core/block/editor/basic/basic.go:613`) allows exactly ten
+text styles: `paragraph`, `quote`, `checkbox`, `marked`, `numbered`, `toggle`,
+`callout` and `toggleHeader1/2/3`. Headings (`header1`–`header4`), `code`,
+`title` and `description` are not among them, so `block-move` with
+`position=inner` or `inner_first` onto one of those fails with *cannot move to
+block that cannot have children*. The check runs only when the target is a text
+block; a non-text target is never tested.
+
+**`block-create` does not apply the same rule.** `CreateBlock` (`basic.go:133`)
+goes straight to `state.InsertTo` (`core/block/editor/state/position.go:18`),
+which has no such guard — and neither does `Duplicate`. Measured against a live
+instance: creating a block with `position=inner` on a `header3` succeeds, the
+child appears in the heading's `children_ids`, is still there after the write
+settles and a fresh read, and can be moved back out afterwards, leaving the
+heading childless again. So the nesting is real and persistent, not silently
+normalised away; heart simply enforces the rule in one of the two paths.
+
+Because heart's message names neither the styles that would work nor a way out,
+`block-move` vets an inner drop target itself before the RPC and answers with
+both. `block-move` must **not** paper the asymmetry over by falling back to
+create+delete: it
+promises that block ids survive a move within one object, and a fallback would
+break that promise silently — the caller would get `moved: true` and dead ids.
+What it offers instead is the opt-in `convert_target_to_toggle`, which does what
+a user does by hand: turn `header1/2/3` into the matching `toggle_header*` and
+then move for real, so every id stays. `header4` has no counterpart (Anytype has
+no `toggle_header4`) and is refused with that reason rather than converted to
+something else.
+
+### `block-list` reports styles under the schema's names, not protobuf's
+
+`BlockContentTextStyle.String()` spells a bulleted list `Marked` and an
+underline mark `Underscored`. Those names are not in `TextStyleNames()` /
+`MarkTypeNames()`, so a client that validates arguments against the tool schema —
+all of them do — could not pass back a value it had just read. `blockFromModel`
+therefore maps through `textStyleNames` / `markTypeNames`, and `block-turn-into`
+and `block-mark` answer with the resolved name rather than the alias the caller
+sent. A turn-into that reported `bulleted` while the readback said `marked` was
+reported as a write that did nothing; it had worked all along.
+
+The reverse maps are written out instead of reversing the parse tables with
+`enumName`: those tables hold aliases on the same value (`bulleted`/`marked`,
+`checkbox`/`todo`, `code`/`keyboard`, `underline`/`underscored`), and Go's map
+iteration order would pick between them differently from run to run.
+
+`title` is the one style reported but not accepted: it is the object's name
+block, not a style to convert a paragraph into.
+
 ---
 
 ## Tables

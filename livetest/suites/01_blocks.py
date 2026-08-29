@@ -29,6 +29,19 @@ def run(s):
     )
     s.check("block-turn-into applies", s.block(obj, bid)["style"] == "header2")
 
+    # The aliases the schema advertises have to survive the round trip: a write
+    # answering "bulleted" while block-list reported "marked" for the same
+    # block made a working turn-into look like a silent no-op.
+    turned = s.c.call(
+        "block-turn-into", space_id=s.space_id, object_id=obj, block_ids=[bid], style="bulleted"
+    )
+    read_back = s.block(obj, bid)["style"]
+    s.check("turn-into answers with the name block-list reports",
+            turned["style"] == read_back == "bulleted", (turned["style"], read_back))
+    s.c.call(
+        "block-turn-into", space_id=s.space_id, object_id=obj, block_ids=[bid], style="header2"
+    )
+
     s.c.call(
         "block-mark", space_id=s.space_id, object_id=obj, block_ids=[bid],
         **{"from": 0, "to": 3, "type": "bold"},
@@ -37,6 +50,14 @@ def run(s):
         "block-mark applies",
         "bold" in [m["type"] for m in s.block(obj, bid).get("marks", [])],
     )
+
+    marked = s.c.call(
+        "block-mark", space_id=s.space_id, object_id=obj, block_ids=[bid],
+        **{"from": 0, "to": 3, "type": "underline"},
+    )
+    read_types = [m["type"] for m in s.block(obj, bid).get("marks", [])]
+    s.check("mark types round-trip under their schema name",
+            marked["type"] == "underline" and "underline" in read_types, read_types)
 
     s.c.call(
         "block-style", space_id=s.space_id, object_id=obj, block_ids=[bid],
@@ -68,7 +89,7 @@ def run(s):
     s.check("paste creates several blocks in one call", res["created_count"] >= 6, res["created_count"])
     s.check("paste appends after existing content", body[0] == ("paragraph", "BESTAND"), body[:1])
     s.check("paste parses headings", "header1" in styles, styles)
-    s.check("paste parses bullet lists", "marked" in styles, styles)
+    s.check("paste parses bullet lists", "bulleted" in styles, styles)
     s.check("paste parses numbered lists", "numbered" in styles, styles)
     s.check("paste parses quotes", "quote" in styles, styles)
     checked = [b for b in s.blocks(target) if b.get("style") == "checkbox"]
@@ -115,6 +136,83 @@ def run(s):
         "block-split", space_id=s.space_id, object_id=obj, block_id=sb, at=9999
     )
     s.check("split beyond the end of the text is refused", status == "err")
+
+    # --- nesting under a heading -------------------------------------------
+    # heart checks canHaveChildren only in Move, not in CreateBlock, so an inner
+    # move onto a heading fails where a create succeeds. convert_target_to_toggle
+    # is the opt-in that resolves it the way the GUI does: change the target's
+    # style, keep every id.
+    nest = s.page("nesting")
+    h3 = s.c.call("block-create", space_id=s.space_id, object_id=nest,
+                  kind="text", style="header3", text="UEBERSCHRIFT")["block_id"]
+    kind_ = s.c.call("block-create", space_id=s.space_id, object_id=nest,
+                     kind="text", text="KANDIDAT")["block_id"]
+    status, msg = s.c.try_call(
+        "block-move", space_id=s.space_id, object_id=nest, block_ids=[kind_],
+        drop_target_id=h3, position="inner",
+    )
+    s.check("inner move onto a plain heading is refused", status == "err", msg)
+    s.check("the refusal names the styles that would work and the way out",
+            "bulleted" in msg and "convert_target_to_toggle" in msg
+            and "toggle_header3" in msg, msg)
+
+    res = s.c.call(
+        "block-move", space_id=s.space_id, object_id=nest, block_ids=[kind_],
+        drop_target_id=h3, position="inner", convert_target_to_toggle=True,
+    )
+    s.check("the conversion is reported", res.get("converted_target") == "toggle_header3", res)
+    s.check("the drop target really changed style",
+            s.block(nest, h3)["style"] == "toggle_header3", s.block(nest, h3)["style"])
+    s.check("the moved block is nested and kept its id",
+            kind_ in (s.block(nest, h3).get("children_ids") or []),
+            s.block(nest, h3).get("children_ids"))
+
+    # header4 has no toggle counterpart, so the flag must not invent one
+    h4 = s.c.call("block-create", space_id=s.space_id, object_id=nest,
+                  kind="text", style="header4", text="VIER")["block_id"]
+    solo = s.c.call("block-create", space_id=s.space_id, object_id=nest,
+                    kind="text", text="ALLEIN")["block_id"]
+    status, msg = s.c.try_call(
+        "block-move", space_id=s.space_id, object_id=nest, block_ids=[solo],
+        drop_target_id=h4, position="inner", convert_target_to_toggle=True,
+    )
+    s.check("header4 is refused with the reason, not silently converted",
+            status == "err" and "toggle counterpart" in msg, msg)
+
+    # without the flag header4 gets the plain refusal, and must not be told to
+    # pass a flag that cannot help it
+    status, msg = s.c.try_call(
+        "block-move", space_id=s.space_id, object_id=nest, block_ids=[solo],
+        drop_target_id=h4, position="inner",
+    )
+    s.check("header4 without the flag is not pointed at a flag that cannot help",
+            status == "err" and "no style it can be converted to" in msg, msg)
+    s.check("the refused target kept its style",
+            s.block(nest, h4)["style"] == "header4", s.block(nest, h4)["style"])
+
+    # a target that already takes children needs no conversion
+    para = s.c.call("block-create", space_id=s.space_id, object_id=nest,
+                    kind="text", text="ABSATZ")["block_id"]
+    res = s.c.call(
+        "block-move", space_id=s.space_id, object_id=nest, block_ids=[solo],
+        drop_target_id=para, position="inner", convert_target_to_toggle=True,
+    )
+    s.check("a child-capable target is left alone",
+            "converted_target" not in res and s.block(nest, para)["style"] == "paragraph", res)
+
+    # a failing move after a successful conversion has to name the conversion,
+    # because the style change is already written and nothing rolls it back.
+    # Dropping a block onto itself converts fine and then fails in InsertTo.
+    h2 = s.c.call("block-create", space_id=s.space_id, object_id=nest,
+                  kind="text", style="header2", text="ZWEI")["block_id"]
+    status, msg = s.c.try_call(
+        "block-move", space_id=s.space_id, object_id=nest, block_ids=[h2],
+        drop_target_id=h2, position="inner", convert_target_to_toggle=True,
+    )
+    s.check("a move that fails after converting says the target was changed",
+            status == "err" and "converted to toggle_header2" in msg, msg)
+    s.check("and the conversion is really still in place",
+            s.block(nest, h2)["style"] == "toggle_header2", s.block(nest, h2)["style"])
 
     # --- move and duplicate report usable ids ------------------------------
     # Within one object ids survive; moving into another object re-creates the

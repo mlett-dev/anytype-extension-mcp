@@ -90,6 +90,96 @@ var textStyles = map[string]model.BlockContentTextStyle{
 	"toggle_header3": model.BlockContentText_ToggleHeader3,
 }
 
+// textStyleNames maps a stored style back to the ONE name the tool schemas
+// advertise. block-list used to report the generated String() instead, which
+// leaks protobuf spelling: a bulleted list came back as "marked" and an
+// underline mark as "underscored" — names TextStyleNames/MarkTypeNames do not
+// list, so a client that validates against the schema could not pass the value
+// it had just read. The read side now speaks the write side's vocabulary.
+//
+// Written out rather than reversed with enumName: textStyles holds aliases on
+// the same value (bulleted/marked, checkbox/todo), and map iteration would pick
+// between them at random, so the reported name would differ from run to run.
+//
+// "title" is here because a title block has to be reportable, but it stays out
+// of TextStyleNames on purpose: it is the object's name block, not a style to
+// turn an arbitrary paragraph into.
+var textStyleNames = map[model.BlockContentTextStyle]string{
+	model.BlockContentText_Paragraph:     "paragraph",
+	model.BlockContentText_Header1:       "header1",
+	model.BlockContentText_Header2:       "header2",
+	model.BlockContentText_Header3:       "header3",
+	model.BlockContentText_Header4:       "header4",
+	model.BlockContentText_Quote:         "quote",
+	model.BlockContentText_Code:          "code",
+	model.BlockContentText_Title:         "title",
+	model.BlockContentText_Checkbox:      "checkbox",
+	model.BlockContentText_Marked:        "bulleted",
+	model.BlockContentText_Numbered:      "numbered",
+	model.BlockContentText_Toggle:        "toggle",
+	model.BlockContentText_Description:   "description",
+	model.BlockContentText_Callout:       "callout",
+	model.BlockContentText_ToggleHeader1: "toggle_header1",
+	model.BlockContentText_ToggleHeader2: "toggle_header2",
+	model.BlockContentText_ToggleHeader3: "toggle_header3",
+}
+
+// markTypeNames does the same for inline marks: MarkTypeNames advertises "code"
+// and "underline", the protobuf calls them Keyboard and Underscored.
+var markTypeNames = map[model.BlockContentTextMarkType]string{
+	model.BlockContentTextMark_Strikethrough:   "strikethrough",
+	model.BlockContentTextMark_Keyboard:        "code",
+	model.BlockContentTextMark_Italic:          "italic",
+	model.BlockContentTextMark_Bold:            "bold",
+	model.BlockContentTextMark_Underscored:     "underline",
+	model.BlockContentTextMark_Link:            "link",
+	model.BlockContentTextMark_TextColor:       "text_color",
+	model.BlockContentTextMark_BackgroundColor: "background_color",
+	model.BlockContentTextMark_Mention:         "mention",
+	model.BlockContentTextMark_Emoji:           "emoji",
+	model.BlockContentTextMark_Object:          "object",
+}
+
+// TextStyleName reports a stored text style under its schema name. A style a
+// newer heart adds falls back to the protobuf spelling, which is wrong in the
+// same way as before but still better than an empty string.
+func TextStyleName(style model.BlockContentTextStyle) string {
+	if name, ok := textStyleNames[style]; ok {
+		return name
+	}
+	return strings.ToLower(style.String())
+}
+
+// MarkTypeName reports a stored mark type under its schema name.
+func MarkTypeName(markType model.BlockContentTextMarkType) string {
+	if name, ok := markTypeNames[markType]; ok {
+		return name
+	}
+	return strings.ToLower(markType.String())
+}
+
+// CanonicalTextStyle resolves an accepted style name to the one the read side
+// reports, so a tool can answer with the name block-list will show rather than
+// echoing the alias the caller happened to use. Answering "bulleted" to a write
+// that block-list then reports as "marked" is what made a working turn-into
+// look like a silent no-op.
+func CanonicalTextStyle(style string) string {
+	parsed, err := lookupEnum(textStyles, style, "block style", false)
+	if err != nil {
+		return style
+	}
+	return TextStyleName(parsed)
+}
+
+// CanonicalMarkType is the same for inline mark names.
+func CanonicalMarkType(markType string) string {
+	parsed, err := lookupEnum(markTypes, markType, "mark type", false)
+	if err != nil {
+		return markType
+	}
+	return MarkTypeName(parsed)
+}
+
 var blockPositions = map[string]model.BlockPosition{
 	"top":         model.Block_Top,
 	"bottom":      model.Block_Bottom,
@@ -126,6 +216,42 @@ var blockAligns = map[string]model.BlockAlign{
 var divStyles = map[string]model.BlockContentDivStyle{
 	"line": model.BlockContentDiv_Line,
 	"dots": model.BlockContentDiv_Dots,
+}
+
+// childCapableStyles mirrors canHaveChildren in heart's
+// core/block/editor/basic/basic.go: the styles a block-move with position=inner
+// or inner_first may drop onto. Kept here only to give a caller a useful answer
+// before the RPC; heart stays the authority, and a move it refuses still fails.
+var childCapableStyles = map[string]bool{
+	"paragraph": true, "quote": true, "checkbox": true, "bulleted": true,
+	"numbered": true, "toggle": true, "callout": true,
+	"toggle_header1": true, "toggle_header2": true, "toggle_header3": true,
+}
+
+// toggleEquivalents pairs a heading with the collapsible heading that looks the
+// same and does take children. header4 has no counterpart because Anytype has
+// no toggle_header4.
+var toggleEquivalents = map[string]string{
+	"header1": "toggle_header1",
+	"header2": "toggle_header2",
+	"header3": "toggle_header3",
+}
+
+// StyleCanHaveChildren reports whether a text block of this style may hold
+// nested blocks. An unknown name counts as capable, so a style a newer heart
+// adds is left to heart to judge rather than pre-emptively refused here.
+func StyleCanHaveChildren(style string) bool {
+	if _, known := textStyles[strings.ToLower(strings.TrimSpace(style))]; !known {
+		return true
+	}
+	return childCapableStyles[CanonicalTextStyle(style)]
+}
+
+// ToggleEquivalent gives the collapsible heading that renders like the given
+// heading and can hold children.
+func ToggleEquivalent(style string) (string, bool) {
+	name, ok := toggleEquivalents[CanonicalTextStyle(style)]
+	return name, ok
 }
 
 // TextStyleNames lists the accepted block styles, for tool schemas.
@@ -180,7 +306,7 @@ func blockFromModel(b *model.Block) BlockInfo {
 	switch content := b.Content.(type) {
 	case *model.BlockContentOfText:
 		info.Kind = "text"
-		info.Style = strings.ToLower(content.Text.Style.String())
+		info.Style = TextStyleName(content.Text.Style)
 		info.Text = content.Text.Text
 		info.Checked = content.Text.Checked
 		info.Color = content.Text.Color
@@ -189,7 +315,7 @@ func blockFromModel(b *model.Block) BlockInfo {
 			info.Marks = append(info.Marks, MarkSpec{
 				From:  m.GetRange().GetFrom(),
 				To:    m.GetRange().GetTo(),
-				Type:  strings.ToLower(m.Type.String()),
+				Type:  MarkTypeName(m.Type),
 				Param: m.Param,
 			})
 		}
