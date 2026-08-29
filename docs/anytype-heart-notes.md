@@ -570,6 +570,34 @@ there. Anytype stores it in the hidden details `coverId` and `coverType`, where
 The cover tools write exactly those two details and read them back through
 `ObjectShow`. `get-object-compact` can never show a cover, however it is asked.
 
+### Icons are three relations pretending to be one field
+
+An icon is stored in `iconEmoji`, `iconImage`, or the `iconName`/`iconOption`
+pair, and nothing keeps them exclusive. `processIconFields`
+(`core/api/service/object.go`) writes only the relation the requested format
+needs and never clears the others; `getIcon` (`core/api/service/icon.go`)
+resolves them in a fixed order: `iconName`, then `iconEmoji`, then `iconImage`.
+
+So a file icon written over an existing emoji is stored and invisible — the
+emoji keeps winning, `PATCH` answers 200 and the response shows the old icon.
+The opposite direction looks fine and is not: the emoji shows, the file icon
+stays underneath, and it reappears the moment the emoji is removed.
+
+Two things follow that are not guessable:
+
+- `"icon": null` is a no-op, not a removal. `buildUpdatedObjectDetails` tests
+  `request.Icon != nil`, so null means "field not sent". Clearing an emoji is
+  `{"format": "emoji", "emoji": ""}`; the REST API refuses the equivalent for
+  the other two (`400 invalid icon name`, `400 icon file is not valid`), so
+  only gRPC `ObjectSetDetails` can empty those.
+- **Types never render a file icon.** `getIcon` is called for a type with a
+  hardcoded empty image (`core/api/service/type.go`), so `iconImage` on a type
+  is stored and unreadable no matter what else is cleared.
+
+The icon tools therefore write through REST — which is what validates a file id
+against the space via `isValidFileReference` — and then clear the competing
+relations over gRPC. See `anytypefiles/icons.go` and `icon_apply.go`.
+
 ### `BlockFileSetName` is an empty stub
 
 In v0.50.8 it reports success and changes nothing. There is deliberately no

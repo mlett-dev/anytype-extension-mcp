@@ -576,7 +576,7 @@ func (s *mcpServer) allToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "create-objects-compact-many",
-			"description": "Create multiple Anytype objects in one MCP call and return compact per-object results. Each item is sent as one create-object request. Each item must include type_key. Use body for initial content; update tools use markdown instead. " + bulkCompactOptionsDescription,
+			"description": "Create multiple Anytype objects in one MCP call and return compact per-object results. Each item is sent as one create-object request. Each item must include type_key. Use body for initial content; update tools use markdown instead. Icon writes are verified: Anytype can store an icon and still report the previous one, so these tools re-check what the API reports and repair it where possible. When the requested icon is not in effect, the result carries icon_applied:false with an icon_warning explaining why, and reports the write as not applied. An item whose icon is not in effect is counted in error_count even though the object was created, and stop_on_error stops on it like on any other failure. " + bulkCompactOptionsDescription,
 			"inputSchema": compactObjectToolSchema([]string{"space_id", "items"}, map[string]any{
 				"space_id": map[string]any{
 					"type":        "string",
@@ -628,7 +628,7 @@ func (s *mcpServer) allToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "update-object-compact",
-			"description": "REST wrapper for Anytype update-object with compact acknowledgement. Sends update fields to Anytype and returns a compact updated object. For properties, use typed fields such as text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects; never send value:null because Anytype cannot determine the property link value type.",
+			"description": "REST wrapper for Anytype update-object with compact acknowledgement. Sends update fields to Anytype and returns a compact updated object. For properties, use typed fields such as text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects; never send value:null because Anytype cannot determine the property link value type. Icon writes are verified: Anytype can store an icon and still report the previous one, so these tools re-check what the API reports and repair it where possible. When the requested icon is not in effect, the result carries icon_applied:false with an icon_warning explaining why, and reports the write as not applied. updated is true only when every requested field, the icon included, is in effect.",
 			"inputSchema": compactObjectToolSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id": map[string]any{
 					"type":        "string",
@@ -664,7 +664,7 @@ func (s *mcpServer) allToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "update-objects-compact-many",
-			"description": "Update multiple Anytype objects in one MCP call and return compact per-object results. Each item is sent as one update-object request. For properties, use typed fields such as text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects; never send value:null because Anytype cannot determine the property link value type. " + bulkCompactOptionsDescription,
+			"description": "Update multiple Anytype objects in one MCP call and return compact per-object results. Each item is sent as one update-object request. For properties, use typed fields such as text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects; never send value:null because Anytype cannot determine the property link value type. Icon writes are verified: Anytype can store an icon and still report the previous one, so these tools re-check what the API reports and repair it where possible. When the requested icon is not in effect, the result carries icon_applied:false with an icon_warning explaining why, and reports the write as not applied. An item whose icon is not in effect is counted in error_count, and stop_on_error stops on it like on any other failure. " + bulkCompactOptionsDescription,
 			"inputSchema": compactObjectToolSchema([]string{"space_id", "items"}, map[string]any{
 				"space_id": map[string]any{
 					"type":        "string",

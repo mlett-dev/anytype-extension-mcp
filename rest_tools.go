@@ -386,7 +386,7 @@ func allRestToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "update-type",
-			"description": "Update an object type's name, layout, icon or linked properties. Unlike create-type, a properties key that names no existing property is refused here rather than creating one, because on an existing type that is nearly always a misspelling; pass allow_new_properties=true when a new property really is meant.",
+			"description": "Update an object type's name, layout, icon or linked properties. Unlike create-type, a properties key that names no existing property is refused here rather than creating one, because on an existing type that is nearly always a misspelling; pass allow_new_properties=true when a new property really is meant. Icon writes are verified and repaired where possible; note that Anytype never reads a file icon back on a type, so use an emoji or a built-in icon there.",
 			"inputSchema": restSchema([]string{"space_id", "type_id"}, map[string]any{
 				"space_id":    spaceIDProp(),
 				"type_id":     strProp("Type ID: the bafyrei... id from list-types-compact. The type key is NOT accepted here and returns 500."),
@@ -1001,8 +1001,12 @@ func (s *mcpServer) toolCreateType(args map[string]any) (map[string]any, error) 
 	setIfPresent(body, args, "key")
 	setRawIfPresent(body, args, "icon")
 	setRawIfPresent(body, args, "properties")
-	return s.anytypeAPIRequest(http.MethodPost,
+	payload, err := s.anytypeAPIRequest(http.MethodPost,
 		"/v1/spaces/"+url.PathEscape(spaceID)+"/types", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	return s.verifyTypeIcon(spaceID, args, payload), nil
 }
 
 func (s *mcpServer) toolUpdateType(args map[string]any) (map[string]any, error) {
@@ -1027,8 +1031,12 @@ func (s *mcpServer) toolUpdateType(args map[string]any) (map[string]any, error) 
 	if err := s.guardNewTypeProperties(spaceID, args); err != nil {
 		return nil, err
 	}
-	return s.anytypeAPIRequest(http.MethodPatch,
+	payload, err := s.anytypeAPIRequest(http.MethodPatch,
 		"/v1/spaces/"+url.PathEscape(spaceID)+"/types/"+url.PathEscape(typeID), nil, body)
+	if err != nil {
+		return nil, err
+	}
+	return s.verifyTypeIcon(spaceID, args, payload), nil
 }
 
 func (s *mcpServer) toolDeleteType(args map[string]any) (map[string]any, error) {

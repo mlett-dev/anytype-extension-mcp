@@ -238,13 +238,34 @@ func (s *mcpServer) toolObjectsCreateCompactMany(args map[string]any) (map[strin
 		}
 
 		objectID := stringValue(obj["id"])
-		results = append(results, map[string]any{
+		// Creation is not exempt from the precedence problem. A fresh object has
+		// no icon to compete with, but a template does: heart merges these
+		// details onto the template's state and iconEmoji is not among the keys
+		// the template loses, so a template emoji should outlive the icon passed
+		// here. That last step is read from heart's source, not measured — see
+		// the note in livetest/suites/11_icons.py.
+		obj, iconOK, iconNote := s.applyIcon(s.objectIconTarget(spaceID, objectID), requestedIconFormat(item), obj)
+		entry := map[string]any{
 			"index":     i,
 			"object_id": objectID,
 			"created":   true,
 			"object":    compactListObject(obj, opts),
-		})
-		okCount++
+		}
+		for key, value := range iconFields(iconNote, iconOK) {
+			entry[key] = value
+		}
+		// The object exists either way, so "created" stays true — but an icon
+		// that never took still makes this entry a failure to report.
+		if !iconOK {
+			entry["error"] = iconNote
+			errorCount++
+		} else {
+			okCount++
+		}
+		results = append(results, entry)
+		if !iconOK && stopOnError {
+			break
+		}
 	}
 
 	return map[string]any{
@@ -285,15 +306,20 @@ func (s *mcpServer) toolObjectUpdateCompact(args map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
+	obj, iconOK, iconNote := s.applyIcon(s.objectIconTarget(spaceID, objectID), requestedIconFormat(args), obj)
 	opts := parseCompactOptions(args)
-	return map[string]any{
+	result := map[string]any{
 		"space_id":     spaceID,
 		"object_id":    objectID,
-		"updated":      true,
+		"updated":      iconOK,
 		"object":       compactListObject(obj, opts),
 		"api_base_url": s.cfg.apiBaseURL,
 		"api_version":  s.cfg.apiVersion,
-	}, nil
+	}
+	for key, value := range iconFields(iconNote, iconOK) {
+		result[key] = value
+	}
+	return result, nil
 }
 
 func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[string]any, error) {
@@ -382,13 +408,28 @@ func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[strin
 			}
 			continue
 		}
-		results = append(results, map[string]any{
+		obj, iconOK, iconNote := s.applyIcon(s.objectIconTarget(spaceID, objectID), requestedIconFormat(item), obj)
+		entry := map[string]any{
 			"index":     i,
 			"object_id": objectID,
-			"updated":   true,
+			"updated":   iconOK,
 			"object":    compactListObject(obj, opts),
-		})
-		okCount++
+		}
+		for key, value := range iconFields(iconNote, iconOK) {
+			entry[key] = value
+		}
+		// An entry whose icon never took is a failed update, not a partial one:
+		// counting it as ok is exactly the false success this check exists for.
+		if !iconOK {
+			entry["error"] = iconNote
+			errorCount++
+		} else {
+			okCount++
+		}
+		results = append(results, entry)
+		if !iconOK && stopOnError {
+			break
+		}
 	}
 
 	return map[string]any{
