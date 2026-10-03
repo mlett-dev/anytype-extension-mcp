@@ -463,3 +463,190 @@ func (c *Client) RemoveImportWidget(
 		}
 	}
 }
+
+// AddWidgetSpec is one widget to create.
+type AddWidgetSpec struct {
+	TargetID string
+	Layout   string
+	Limit    int32
+	ViewID   string
+	Position string // top or bottom
+}
+
+// AddWidgets creates widgets and returns the sidebar afterwards, together with
+// the targets that were already there.
+//
+// Idempotent on purpose: BlockCreateWidget does not check for a duplicate
+// target (core/widget.go passes checkDuplicatedTarget=false), so asking twice
+// would pin the same object twice. A caller that cannot tell whether it already
+// ran is the normal case here, so an existing target is reported, not created.
+func (c *Client) AddWidgets(
+	ctx context.Context, spaceID, widgetsID string, specs []AddWidgetSpec,
+) (added []SidebarWidget, present []string, err error) {
+	before, err := c.ReadSidebar(ctx, spaceID, widgetsID, "space", "all")
+	if err != nil {
+		return nil, nil, err
+	}
+	known := make(map[string]struct{}, len(before.Widgets))
+	targets := make(map[string]struct{}, len(before.Widgets))
+	for _, w := range before.Widgets {
+		known[w.BlockID] = struct{}{}
+		targets[w.TargetID] = struct{}{}
+	}
+
+	var created bool
+	for i, spec := range specs {
+		if strings.TrimSpace(spec.TargetID) == "" {
+			return nil, nil, fmt.Errorf("specs[%d]: target_id is required", i)
+		}
+		if _, exists := targets[spec.TargetID]; exists {
+			present = append(present, spec.TargetID)
+			continue
+		}
+		layout, err := lookupEnum(widgetLayouts, spec.Layout, "layout", true)
+		if err != nil {
+			return nil, nil, fmt.Errorf("specs[%d]: %w", i, err)
+		}
+		// An empty target in InsertTo means the root, and the root accepts only
+		// inner insertions: Block_Top would silently become Block_Inner, i.e.
+		// the bottom. InnerFirst is what "top" has to mean here.
+		pos := model.Block_Inner
+		if strings.EqualFold(strings.TrimSpace(spec.Position), "top") {
+			pos = model.Block_InnerFirst
+		}
+
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, rpcErr := c.rpc.BlockCreateWidget(callCtx, &pb.RpcBlockCreateWidgetRequest{
+			ContextId:    widgetsID,
+			Position:     pos,
+			WidgetLayout: layout,
+			ObjectLimit:  spec.Limit,
+			ViewId:       spec.ViewID,
+			Block: &model.Block{Content: &model.BlockContentOfLink{
+				Link: &model.BlockContentLink{TargetBlockId: spec.TargetID},
+			}},
+		})
+		cancel()
+		if rpcErr != nil {
+			return nil, nil, fmt.Errorf("gRPC BlockCreateWidget failed: %w", rpcErr)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcBlockCreateWidgetResponseError_NULL {
+			return nil, nil, fmt.Errorf("BlockCreateWidget error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
+		targets[spec.TargetID] = struct{}{}
+		created = true
+	}
+
+	if !created {
+		return nil, present, nil
+	}
+	after, err := c.ReadSidebar(ctx, spaceID, widgetsID, "space", "all")
+	if err != nil {
+		return nil, present, err
+	}
+	// heart reports the wrapper id, not the inner link, and nothing reports the
+	// inner one — so the new widgets are found by diffing block ids.
+	for _, w := range after.Widgets {
+		if _, seen := known[w.BlockID]; !seen {
+			added = append(added, w)
+		}
+	}
+	return added, present, nil
+}
+
+// UpdateWidget changes the presentation or the target of one widget. Only the
+// non-nil fields are written; each is a separate RPC in heart.
+func (c *Client) UpdateWidget(
+	ctx context.Context, widgetsID, wrapperID string, layout, viewID, targetID *string, limit *int32,
+) (changed []string, err error) {
+	if strings.TrimSpace(wrapperID) == "" {
+		return nil, errors.New("wrapper id is required")
+	}
+	if layout != nil {
+		value, err := lookupEnum(widgetLayouts, *layout, "layout", false)
+		if err != nil {
+			return nil, err
+		}
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, rpcErr := c.rpc.BlockWidgetSetLayout(callCtx, &pb.RpcBlockWidgetSetLayoutRequest{
+			ContextId: widgetsID, BlockId: wrapperID, Layout: value,
+		})
+		cancel()
+		if rpcErr != nil {
+			return changed, fmt.Errorf("gRPC BlockWidgetSetLayout failed: %w", rpcErr)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcBlockWidgetSetLayoutResponseError_NULL {
+			return changed, fmt.Errorf("BlockWidgetSetLayout error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
+		changed = append(changed, "layout")
+	}
+	if limit != nil {
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, rpcErr := c.rpc.BlockWidgetSetLimit(callCtx, &pb.RpcBlockWidgetSetLimitRequest{
+			ContextId: widgetsID, BlockId: wrapperID, Limit: *limit,
+		})
+		cancel()
+		if rpcErr != nil {
+			return changed, fmt.Errorf("gRPC BlockWidgetSetLimit failed: %w", rpcErr)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcBlockWidgetSetLimitResponseError_NULL {
+			return changed, fmt.Errorf("BlockWidgetSetLimit error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
+		changed = append(changed, "limit")
+	}
+	if viewID != nil {
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, rpcErr := c.rpc.BlockWidgetSetViewId(callCtx, &pb.RpcBlockWidgetSetViewIdRequest{
+			ContextId: widgetsID, BlockId: wrapperID, ViewId: *viewID,
+		})
+		cancel()
+		if rpcErr != nil {
+			return changed, fmt.Errorf("gRPC BlockWidgetSetViewId failed: %w", rpcErr)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcBlockWidgetSetViewIdResponseError_NULL {
+			return changed, fmt.Errorf("BlockWidgetSetViewId error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
+		changed = append(changed, "view_id")
+	}
+	if targetID != nil {
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, rpcErr := c.rpc.BlockWidgetSetTargetId(callCtx, &pb.RpcBlockWidgetSetTargetIdRequest{
+			ContextId: widgetsID, BlockId: wrapperID, TargetId: *targetID,
+		})
+		cancel()
+		if rpcErr != nil {
+			return changed, fmt.Errorf("gRPC BlockWidgetSetTargetId failed: %w", rpcErr)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcBlockWidgetSetTargetIdResponseError_NULL {
+			return changed, fmt.Errorf("BlockWidgetSetTargetId error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
+		changed = append(changed, "target_id")
+	}
+	if len(changed) == 0 {
+		return nil, errors.New("nothing to change: pass layout, limit, view_id or target_id")
+	}
+	return changed, nil
+}
+
+// ArrangeWidgets moves the named widgets to the top of the sidebar in the order
+// given. Widgets not named keep their relative order below them, the same
+// contract query-order-set uses, so a caller can reorder two widgets without
+// having to list all of them.
+func (c *Client) ArrangeWidgets(
+	ctx context.Context, spaceID, widgetsID string, wrapperIDs []string,
+) error {
+	if len(wrapperIDs) == 0 {
+		return errors.New("no widgets to arrange")
+	}
+	// The first one goes to the root as InnerFirst, because a widget has no
+	// sibling to be placed above when it should become the first.
+	if err := c.MoveBlocks(ctx, widgetsID, wrapperIDs[:1], "", widgetsID, "inner_first"); err != nil {
+		return err
+	}
+	for i := 1; i < len(wrapperIDs); i++ {
+		if err := c.MoveBlocks(ctx, widgetsID, wrapperIDs[i:i+1], "", wrapperIDs[i-1], "bottom"); err != nil {
+			return err
+		}
+	}
+	return nil
+}

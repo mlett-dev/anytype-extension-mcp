@@ -767,6 +767,25 @@ notices — which is why `sidebar-inspect` leads with the counts and
 `sidebar-prune` exists, and why `object-import` removes the widget it caused
 unless `keep_widget` says otherwise.
 
+### Writing widgets: four quirks worth knowing
+
+- **No duplicate check.** `core/widget.go` calls `CreateWidgetBlock` with
+  `checkDuplicatedTarget=false`, so the same object can be pinned twice. Only
+  the import path passes `true`. `sidebar-widget-add` therefore checks itself
+  and reports an existing target instead of creating a second widget.
+- **An empty target means the root, and the root takes only inner
+  insertions.** `state.InsertTo` rewrites `Block_Top` to `Block_Inner` when
+  there is no target block, so asking for the top of the sidebar without naming
+  a sibling lands at the bottom. `Block_InnerFirst` is what "top" has to mean.
+- **`BlockWidgetSetTargetId` keeps the block.** It repoints the existing link
+  rather than replacing it, so block and wrapper ids survive — verified live by
+  repointing a widget at `bin` and back.
+- **Reordering has no declarative RPC.** `BlockListMoveToExistingObject` moves
+  one group at a time, so a wanted order is built as a chain: the first wrapper
+  to the root as `InnerFirst`, each following one `Bottom` of its predecessor.
+  Widgets not named keep their relative order below, which is the same contract
+  `query-order-set` uses.
+
 ### Removing a widget goes through the inner block id
 
 `BlockListDelete` → `UnlinkBlock` → `basic.Unlinkable.Unlink`, which on a
