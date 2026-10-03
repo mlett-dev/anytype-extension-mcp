@@ -650,3 +650,185 @@ func (c *Client) ArrangeWidgets(
 	}
 	return nil
 }
+
+// SidebarPlan is what applying a wanted sidebar would do, or did.
+type SidebarPlan struct {
+	Add     []AddWidgetSpec
+	Remove  []SidebarWidget
+	Update  []SidebarWidget
+	Reorder bool
+	Applied bool
+	Order   []SidebarWidget
+}
+
+// ApplySidebar reconciles a widget object against a wanted list.
+//
+// Declarative because the alternative is ten calls on an object every member of
+// the space sees: a sequence that fails halfway leaves a sidebar that is
+// neither the old one nor the new one. Targets are the identity here — block
+// ids change when a widget is recreated, so a snapshot that carried them could
+// not be replayed.
+//
+// removeMissing decides whether this is an exact state or an addition. It
+// defaults to off in the tool, because a caller that passes an incomplete list
+// would otherwise wipe what it forgot to mention.
+func (c *Client) ApplySidebar(
+	ctx context.Context, spaceID, widgetsID, scope string,
+	wanted []AddWidgetSpec, removeMissing, apply bool,
+) (SidebarPlan, error) {
+	if len(wanted) == 0 && !removeMissing {
+		return SidebarPlan{}, errors.New("widgets is required")
+	}
+	seen := make(map[string]struct{}, len(wanted))
+	for i, spec := range wanted {
+		if strings.TrimSpace(spec.TargetID) == "" {
+			return SidebarPlan{}, fmt.Errorf("widgets[%d]: target_id is required", i)
+		}
+		if _, dup := seen[spec.TargetID]; dup {
+			return SidebarPlan{}, fmt.Errorf("widgets[%d]: %s is listed twice", i, spec.TargetID)
+		}
+		seen[spec.TargetID] = struct{}{}
+		if _, err := lookupEnum(widgetLayouts, spec.Layout, "layout", true); err != nil {
+			return SidebarPlan{}, fmt.Errorf("widgets[%d]: %w", i, err)
+		}
+	}
+
+	current, err := c.ReadSidebar(ctx, spaceID, widgetsID, scope, "all")
+	if err != nil {
+		return SidebarPlan{}, err
+	}
+	// First widget wins per target: heart allows the same target twice, and a
+	// wanted list names a target once, so the extras are surplus either way.
+	byTarget := make(map[string]SidebarWidget, len(current.Widgets))
+	var surplus []SidebarWidget
+	for _, w := range current.Widgets {
+		if _, taken := byTarget[w.TargetID]; taken {
+			surplus = append(surplus, w)
+			continue
+		}
+		byTarget[w.TargetID] = w
+	}
+
+	var plan SidebarPlan
+	for _, spec := range wanted {
+		existing, ok := byTarget[spec.TargetID]
+		if !ok {
+			plan.Add = append(plan.Add, spec)
+			continue
+		}
+		wantLayout, _ := lookupEnum(widgetLayouts, spec.Layout, "layout", true)
+		if enumName(widgetLayouts, wantLayout) != existing.Layout ||
+			spec.Limit != existing.Limit || spec.ViewID != existing.ViewID {
+			plan.Update = append(plan.Update, existing)
+		}
+	}
+	if removeMissing {
+		plan.Remove = append(plan.Remove, surplus...)
+		for _, w := range current.Widgets {
+			if _, keep := seen[w.TargetID]; keep {
+				continue
+			}
+			if kept, ok := byTarget[w.TargetID]; ok && kept.BlockID == w.BlockID {
+				plan.Remove = append(plan.Remove, w)
+			}
+		}
+	}
+	// Any change to the set changes positions, so a reorder is needed whenever
+	// the wanted order differs from the current one among the wanted targets.
+	var currentOrder []string
+	for _, w := range current.Widgets {
+		if _, keep := seen[w.TargetID]; keep {
+			currentOrder = append(currentOrder, w.TargetID)
+		}
+	}
+	for i, spec := range wanted {
+		if i >= len(currentOrder) || currentOrder[i] != spec.TargetID {
+			plan.Reorder = true
+			break
+		}
+	}
+	if len(plan.Add) > 0 || len(plan.Remove) > 0 {
+		plan.Reorder = len(wanted) > 1
+	}
+
+	if !apply {
+		plan.Order = current.Widgets
+		return plan, nil
+	}
+
+	// Remove first, so a wanted target that only existed as a surplus widget is
+	// not removed again right after being added.
+	if len(plan.Remove) > 0 {
+		ids := make([]string, 0, len(plan.Remove))
+		for _, w := range plan.Remove {
+			ids = append(ids, w.BlockID)
+		}
+		if err := c.PruneSidebar(ctx, widgetsID, ids); err != nil {
+			return plan, fmt.Errorf("removing widgets: %w", err)
+		}
+	}
+	if len(plan.Add) > 0 {
+		if _, _, err := c.AddWidgets(ctx, spaceID, widgetsID, plan.Add); err != nil {
+			return plan, fmt.Errorf("adding widgets: %w", err)
+		}
+	}
+	for _, spec := range wanted {
+		var needs bool
+		for _, u := range plan.Update {
+			if u.TargetID == spec.TargetID {
+				needs = true
+				break
+			}
+		}
+		if !needs {
+			continue
+		}
+		after, err := c.ReadSidebar(ctx, spaceID, widgetsID, scope, "all")
+		if err != nil {
+			return plan, err
+		}
+		for _, w := range after.Widgets {
+			if w.TargetID != spec.TargetID {
+				continue
+			}
+			layout := spec.Layout
+			if layout == "" {
+				layout = "link"
+			}
+			limit := spec.Limit
+			viewID := spec.ViewID
+			if _, err := c.UpdateWidget(ctx, widgetsID, w.WrapperID, &layout, &viewID, nil, &limit); err != nil {
+				return plan, fmt.Errorf("updating widget for %s: %w", spec.TargetID, err)
+			}
+			break
+		}
+	}
+
+	final, err := c.ReadSidebar(ctx, spaceID, widgetsID, scope, "all")
+	if err != nil {
+		return plan, err
+	}
+	if plan.Reorder && len(wanted) > 0 {
+		order := make([]string, 0, len(wanted))
+		for _, spec := range wanted {
+			for _, w := range final.Widgets {
+				if w.TargetID == spec.TargetID {
+					order = append(order, w.WrapperID)
+					break
+				}
+			}
+		}
+		if len(order) > 0 {
+			if err := c.ArrangeWidgets(ctx, spaceID, widgetsID, order); err != nil {
+				return plan, fmt.Errorf("arranging widgets: %w", err)
+			}
+		}
+		final, err = c.ReadSidebar(ctx, spaceID, widgetsID, scope, "all")
+		if err != nil {
+			return plan, err
+		}
+	}
+	plan.Applied = true
+	plan.Order = final.Widgets
+	return plan, nil
+}

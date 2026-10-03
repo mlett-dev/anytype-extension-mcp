@@ -1,6 +1,6 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 136 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 138 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
 
@@ -65,8 +65,9 @@ what the GUI can do.
 `space-get-homepage` `space-set-homepage` `space-file-usage` `get-type-layout`
 `type-set-layout` `schema-set-order`
 
-**Sidebar (7)** — `space-system-objects` `sidebar-inspect` `sidebar-widget-add`
-`sidebar-widget-update` `sidebar-widget-remove` `sidebar-arrange` `sidebar-prune`
+**Sidebar (9)** — `space-system-objects` `sidebar-inspect` `sidebar-widget-add`
+`sidebar-widget-update` `sidebar-widget-remove` `sidebar-arrange`
+`sidebar-snapshot` `sidebar-apply` `sidebar-prune`
 
 **Transfer and versions (10)** — `object-import` `object-export`
 `object-export-files` `object-duplicate` `object-versions`
@@ -356,7 +357,7 @@ docker run --rm -i \
 This project's own code is licensed under the MIT License (see `LICENSE`).
 
 Most of this server — every gRPC-backed tool, which is the large majority of the
-136 — depends on `github.com/anyproto/anytype-heart`, licensed under the **Any
+138 — depends on `github.com/anyproto/anytype-heart`, licensed under the **Any
 Source Available License 1.0**: Non-Commercial Use, or Commercial Use in
 [Allowed Networks](https://networks.any.coop) only. A self-hosted any-sync
 network is not an Allowed Network, so against one, only Non-Commercial Use is

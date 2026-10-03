@@ -41,7 +41,7 @@ func (s *mcpServer) sidebarToolDefs() []any {
 			"description": "Pin objects to a space's sidebar — the GUI's \"Pin to channel\". Every member of the space sees them.\n\n" +
 				"Idempotent: a target that already has a widget is reported under already_present instead of pinned twice (heart itself does not check).\n\n" +
 				"A built-in listing (" + strings.Join(anytypefiles.BuiltinWidgetTargets(), ", ") + ") can be pinned as well by passing its name as target_id.\n\n" +
-				"layout=view needs a view_id from get-list-views-compact and only makes sense for a query or collection.",
+				"layout=view only makes sense for a query or collection; view_id picks one of its views (get-list-views-compact), and without it the client falls back to the first — a state the GUI itself creates.",
 			"inputSchema": restSchema([]string{"space_id", "target_ids"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"target_ids": map[string]any{
@@ -51,7 +51,7 @@ func (s *mcpServer) sidebarToolDefs() []any {
 				},
 				"layout":    enumProp("How the widget renders. Defaults to link (a single row); tree and compact_list are the usual choices for a page or collection.", anytypefiles.WidgetLayoutNames()),
 				"limit":     map[string]any{"type": "integer", "description": "How many child objects a list or tree widget shows. Omitted stores no limit, and the client applies its own."},
-				"view_id":   strProp("Required for layout=view: which view of the query to show."),
+				"view_id":   strProp("Which view layout=view shows. Optional; the client falls back to the first."),
 				"position":  enumProp("top or bottom of the sidebar. Defaults to bottom.", []string{"top", "bottom"}),
 				"scope":     enumProp("space (shared, default) or personal (this account only).", []string{"space", "personal"}),
 				"object_id": strProp("Widget object to write to instead of resolving one from scope."),
@@ -66,7 +66,7 @@ func (s *mcpServer) sidebarToolDefs() []any {
 				"block_id":  strProp("Widget to change, from sidebar-inspect."),
 				"layout":    enumProp("New layout.", anytypefiles.WidgetLayoutNames()),
 				"limit":     map[string]any{"type": "integer", "description": "New item limit. 0 clears the stored limit, and a client then applies its own default; sidebar-inspect reports no limit in that case."},
-				"view_id":   strProp("New view, for layout=view."),
+				"view_id":   strProp("New view for layout=view. Empty clears it, which makes the client fall back to the first."),
 				"target_id": strProp("Point the widget at a different object or built-in listing."),
 				"scope":     enumProp("space (shared, default) or personal (this account only).", []string{"space", "personal"}),
 				"object_id": strProp("Widget object to write to instead of resolving one from scope."),
@@ -98,6 +98,45 @@ func (s *mcpServer) sidebarToolDefs() []any {
 				},
 				"scope":     enumProp("space (shared, default) or personal (this account only).", []string{"space", "personal"}),
 				"object_id": strProp("Widget object to write to instead of resolving one from scope."),
+			}),
+		},
+		map[string]any{
+			"name": "sidebar-snapshot",
+			"description": "Capture a space's sidebar as a list sidebar-apply can replay. Take one before changing a sidebar: the widget object has no undo and every member sees it.\n\n" +
+				"Widgets are identified by target, not by block id, because a recreated widget gets a new block id. Widgets whose target is gone are left out and only counted.",
+			"inputSchema": restSchema([]string{"space_id"}, map[string]any{
+				"space_id":  spaceIDProp(),
+				"scope":     enumProp("space (shared, default) or personal (this account only).", []string{"space", "personal"}),
+				"object_id": strProp("Widget object to read instead of resolving one from scope."),
+			}),
+		},
+		map[string]any{
+			"name": "sidebar-apply",
+			"description": "Bring a space's sidebar to a wanted state in one call: pins what is missing, reconfigures what differs, puts everything in the order given.\n\n" +
+				"Plans by default and changes nothing until apply=true. Prefer this over a sequence of sidebar-widget-* calls when setting up more than one widget — a sequence that fails halfway leaves the sidebar half rebuilt, and every member of the space sees it.\n\n" +
+				"remove_missing=false (default) leaves widgets not listed in place, below the listed ones. remove_missing=true makes the list exact, which also clears dead widgets and duplicate pins.\n\n" +
+				"Feed it sidebar-snapshot's widgets to restore an earlier state.",
+			"inputSchema": restSchema([]string{"space_id", "widgets"}, map[string]any{
+				"space_id": spaceIDProp(),
+				"widgets": map[string]any{
+					"type":        "array",
+					"description": "Wanted widgets, in the order wanted.",
+					"items": map[string]any{
+						"type":                 "object",
+						"required":             []string{"target_id"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"target_id": strProp("Object to pin, or a built-in listing name."),
+							"layout":    enumProp("How it renders. Defaults to link.", anytypefiles.WidgetLayoutNames()),
+							"limit":     map[string]any{"type": "integer", "description": "Item limit for a list or tree."},
+							"view_id":   strProp("Which view layout=view shows. Optional; the client falls back to the first."),
+						},
+					},
+				},
+				"remove_missing": map[string]any{"type": "boolean", "description": "true removes widgets not listed, making the list the exact state.", "default": false},
+				"apply":          map[string]any{"type": "boolean", "description": "true performs the changes. Default false plans only.", "default": false},
+				"scope":          enumProp("space (shared, default) or personal (this account only).", []string{"space", "personal"}),
+				"object_id":      strProp("Widget object to write to instead of resolving one from scope."),
 			}),
 		},
 		map[string]any{
@@ -137,6 +176,12 @@ func (s *mcpServer) dispatchSidebarTool(name string, args map[string]any) (map[s
 		return res, err, true
 	case "sidebar-arrange":
 		res, err := s.toolSidebarArrange(args)
+		return res, err, true
+	case "sidebar-snapshot":
+		res, err := s.toolSidebarSnapshot(args)
+		return res, err, true
+	case "sidebar-apply":
+		res, err := s.toolSidebarApply(args)
 		return res, err, true
 	}
 	return nil, nil, false
@@ -224,6 +269,16 @@ func sidebarWidgetMap(w anytypefiles.SidebarWidget) map[string]any {
 	return entry
 }
 
+// sidebarOrder renders a widget list the way sidebar-inspect does, so every
+// tool that returns widgets returns the same shape.
+func sidebarOrder(widgets []anytypefiles.SidebarWidget) []map[string]any {
+	out := make([]map[string]any, 0, len(widgets))
+	for _, w := range widgets {
+		out = append(out, sidebarWidgetMap(w))
+	}
+	return out
+}
+
 func (s *mcpServer) toolSidebarInspect(args map[string]any) (map[string]any, error) {
 	spaceID, err := requiredString(args, "space_id")
 	if err != nil {
@@ -254,10 +309,7 @@ func (s *mcpServer) toolSidebarInspect(args map[string]any) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	widgets := make([]map[string]any, 0, len(sidebar.Widgets))
-	for _, w := range sidebar.Widgets {
-		widgets = append(widgets, sidebarWidgetMap(w))
-	}
+	widgets := sidebarOrder(sidebar.Widgets)
 	out := map[string]any{
 		"space_id":  sidebar.SpaceID,
 		"object_id": sidebar.ObjectID,
@@ -308,10 +360,7 @@ func (s *mcpServer) toolSidebarPrune(args map[string]any) (map[string]any, error
 		}
 	}
 
-	removing := make([]map[string]any, 0, len(targets))
-	for _, w := range targets {
-		removing = append(removing, sidebarWidgetMap(w))
-	}
+	removing := sidebarOrder(targets)
 	out := map[string]any{
 		"space_id":  spaceID,
 		"object_id": objectID,
@@ -383,9 +432,6 @@ func (s *mcpServer) toolSidebarAdd(args map[string]any) (map[string]any, error) 
 	limit := int32(optionalInt(args, "limit", 0))
 	viewID := optionalString(args, "view_id")
 	position := optionalString(args, "position")
-	if layout == "view" && viewID == "" {
-		return nil, fmt.Errorf("layout=view needs a view_id; read one with get-list-views-compact")
-	}
 
 	specs := make([]anytypefiles.AddWidgetSpec, 0, len(targets))
 	for _, target := range targets {
@@ -398,13 +444,9 @@ func (s *mcpServer) toolSidebarAdd(args map[string]any) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
-	widgets := make([]map[string]any, 0, len(added))
-	for _, w := range added {
-		widgets = append(widgets, sidebarWidgetMap(w))
-	}
 	out := map[string]any{
 		"space_id": spaceID, "object_id": objectID, "scope": scope,
-		"added": len(added), "widgets": widgets,
+		"added": len(added), "widgets": sidebarOrder(added),
 	}
 	if len(present) > 0 {
 		out["already_present"] = present
@@ -555,15 +597,95 @@ func (s *mcpServer) toolSidebarArrange(args map[string]any) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
-	order := make([]map[string]any, 0, len(after.Widgets))
-	for _, w := range after.Widgets {
-		order = append(order, map[string]any{
-			"position": w.Position, "block_id": w.BlockID,
-			"target_name": w.TargetName, "status": w.Status,
-		})
-	}
+	order := sidebarOrder(after.Widgets)
 	return map[string]any{
 		"space_id": spaceID, "object_id": objectID, "scope": scope,
 		"arranged": len(wrappers), "order": order,
+	}, nil
+}
+
+func (s *mcpServer) toolSidebarSnapshot(args map[string]any) (map[string]any, error) {
+	client, ctx, spaceID, objectID, scope, err := s.sidebarWriteTarget(args)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	sidebar, err := client.ReadSidebar(ctx, spaceID, objectID, scope, "all")
+	if err != nil {
+		return nil, err
+	}
+	widgets := make([]map[string]any, 0, len(sidebar.Widgets))
+	for _, w := range sidebar.Widgets {
+		if w.Status == anytypefiles.WidgetStatusDeleted {
+			continue
+		}
+		entry := map[string]any{"target_id": w.TargetID, "layout": w.Layout}
+		if w.Limit != 0 {
+			entry["limit"] = w.Limit
+		}
+		if w.ViewID != "" {
+			entry["view_id"] = w.ViewID
+		}
+		if w.TargetName != "" {
+			// Only for a human reading the snapshot; sidebar-apply ignores it.
+			entry["target_name"] = w.TargetName
+		}
+		widgets = append(widgets, entry)
+	}
+	return map[string]any{
+		"space_id": spaceID, "object_id": objectID, "scope": scope,
+		"widgets": widgets, "skipped_deleted": sidebar.Deleted,
+	}, nil
+}
+
+func (s *mcpServer) toolSidebarApply(args map[string]any) (map[string]any, error) {
+	raw, ok := args["widgets"].([]any)
+	if !ok || len(raw) == 0 {
+		return nil, fmt.Errorf("widgets is required and must be a list")
+	}
+	wanted := make([]anytypefiles.AddWidgetSpec, 0, len(raw))
+	for i, item := range raw {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("widgets[%d] must be an object", i)
+		}
+		spec := anytypefiles.AddWidgetSpec{
+			TargetID: optionalString(entry, "target_id"),
+			Layout:   optionalString(entry, "layout"),
+			Limit:    int32(optionalInt(entry, "limit", 0)),
+			ViewID:   optionalString(entry, "view_id"),
+		}
+		wanted = append(wanted, spec)
+	}
+
+	client, ctx, spaceID, objectID, scope, err := s.sidebarWriteTarget(args)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	plan, err := client.ApplySidebar(
+		ctx, spaceID, objectID, scope, wanted,
+		optionalBool(args, "remove_missing", false), optionalBool(args, "apply", false),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	add := make([]string, 0, len(plan.Add))
+	for _, spec := range plan.Add {
+		add = append(add, spec.TargetID)
+	}
+	remove := sidebarOrder(plan.Remove)
+	update := make([]string, 0, len(plan.Update))
+	for _, w := range plan.Update {
+		update = append(update, w.TargetID)
+	}
+	order := sidebarOrder(plan.Order)
+	return map[string]any{
+		"space_id": spaceID, "object_id": objectID, "scope": scope,
+		"applied": plan.Applied, "add": add, "remove": remove,
+		"update": update, "reorder": plan.Reorder, "order": order,
 	}, nil
 }

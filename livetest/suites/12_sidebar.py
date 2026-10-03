@@ -99,10 +99,13 @@ def run(s):
         again.get("added") == 0 and again.get("already_present") == [probe],
         again,
     )
-    status, msg = s.c.try_call(
+    # layout=view without a view_id is a state the GUI itself creates, so it
+    # must not be refused — otherwise a snapshot of a real sidebar could not be
+    # replayed. Found by snapshotting a space that had such a widget in it.
+    status, _ = s.c.try_call(
         "sidebar-widget-add", space_id=s.space_id, target_ids=[probe], layout="view"
     )
-    s.check("layout=view without a view_id is refused", status == "err", msg)
+    s.check("layout=view without a view_id is accepted", status == "ok")
 
     updated = s.c.call(
         "sidebar-widget-update", space_id=s.space_id, block_id=block_id,
@@ -167,4 +170,62 @@ def run(s):
         "the object itself survives being unpinned",
         s.c.call("object-flags", space_id=s.space_id, object_ids=[probe])["objects"][0]["found"],
         probe,
+    )
+
+    # --- snapshot / apply round trip ---------------------------------------
+    # The point of a snapshot is that it can be replayed, so the check is a
+    # real detour and back: capture, rebuild the sidebar differently, restore,
+    # compare byte for byte.
+    baseline = s.c.call("sidebar-snapshot", space_id=s.space_id)
+    s.check(
+        "sidebar-snapshot identifies widgets by target, never by block id",
+        all("target_id" in w and "block_id" not in w for w in baseline["widgets"]),
+        baseline["widgets"][:2],
+    )
+
+    second = s.page("apply")
+    wanted = [{"target_id": second, "layout": "compact_list", "limit": 3}] + [
+        {k: v for k, v in w.items() if k != "target_name"} for w in baseline["widgets"]
+    ]
+    planned = s.c.call("sidebar-apply", space_id=s.space_id, widgets=wanted)
+    s.check(
+        "sidebar-apply plans without touching anything",
+        planned.get("applied") is False and planned.get("add") == [second],
+        {k: planned.get(k) for k in ("applied", "add", "update", "reorder")},
+    )
+    applied = s.c.call(
+        "sidebar-apply", space_id=s.space_id, widgets=wanted, remove_missing=True, apply=True
+    )
+    s.check(
+        "sidebar-apply puts the wanted widgets in the wanted order",
+        applied.get("applied") is True
+        and [w["position"] for w in applied["order"]][:1] == [0]
+        and applied["order"][0]["layout"] == "compact_list",
+        [(w["position"], w["target_name"], w["layout"]) for w in applied["order"]],
+    )
+    s.check(
+        "applying the same state twice is a no-op",
+        all(
+            not s.c.call(
+                "sidebar-apply", space_id=s.space_id, widgets=wanted, remove_missing=True
+            ).get(k)
+            for k in ("add", "remove", "update", "reorder")
+        ),
+        "second plan is empty",
+    )
+
+    restored = s.c.call(
+        "sidebar-apply", space_id=s.space_id,
+        widgets=[{k: v for k, v in w.items() if k != "target_name"} for w in baseline["widgets"]],
+        remove_missing=True, apply=True,
+    )
+    s.check(
+        "restoring a snapshot removes what was added in between",
+        all(w["target_id"] != second for w in restored["order"]),
+        [w["target_name"] for w in restored["order"]],
+    )
+    s.check(
+        "a restored sidebar snapshots identically to the original",
+        s.c.call("sidebar-snapshot", space_id=s.space_id)["widgets"] == baseline["widgets"],
+        baseline["widgets"],
     )

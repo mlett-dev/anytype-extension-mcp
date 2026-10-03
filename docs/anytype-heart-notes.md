@@ -785,6 +785,10 @@ unless `keep_widget` says otherwise.
   client's own default. Verified live: setting 0 succeeds and the limit is
   simply absent on the next read, indistinguishable from never having been
   set.
+- **`layout: view` does not require a `viewId`.** A widget with the view
+  layout and an empty viewId is a state the GUI produces by itself — found by
+  snapshotting a working space. Rejecting it, as this server briefly did, makes
+  a real sidebar unrestorable.
 - **Reordering has no declarative RPC.** `BlockListMoveToExistingObject` moves
   one group at a time, so a wanted order is built as a chain: the first wrapper
   to the root as `InnerFirst`, each following one `Bottom` of its predecessor.
