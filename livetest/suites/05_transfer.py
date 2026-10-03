@@ -115,6 +115,15 @@ def run(s):
             result.get("started") is True and "objects_count" not in result,
             result,
         )
+        # heart adds a widget for the import collection and nothing ever prunes
+        # it; the tool therefore removes it again by default. Without this
+        # check every run of this suite would leave one behind, which is how a
+        # production sidebar collected 69 of them.
+        s.check(
+            "an import removes the sidebar widget heart added for it",
+            result.get("widget_cleanup") == "removed",
+            result.get("widget_cleanup"),
+        )
         s.settle(2.5)
         found = s.c.call(
             "search-space-compact", space_id=s.space_id, query="LIVETEST Importseite"

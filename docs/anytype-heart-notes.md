@@ -703,6 +703,122 @@ unknown authority".
 
 ---
 
+## The sidebar
+
+### The sidebar is an object, and its id cannot be guessed
+
+What a client draws as the sidebar is the space's **widget smartblock**. Its id
+is derived from the space key, so it cannot be computed, and nothing else
+reveals it: the object is hidden from `ObjectSearch`, absent from `ObjectGraph`,
+and a whole-space protobuf export does not carry it (1861 objects exported, no
+widget object among them). There is no `widgets` relation on the space object
+either — only `spaceDashboardId`, which is the homepage.
+
+`WorkspaceOpen` is the only way in. Its `AccountInfo` carries `widgetsId`,
+`homeObjectId`, `archiveObjectId`, `profileObjectId`, `spaceChatId`,
+`spaceViewId`, `techSpaceId` and `workspaceObjectId`. `WorkspaceGetCurrent` only
+ever describes the active space, so it cannot answer for a chosen one. This is
+what `space-system-objects` exists for, and why `sidebar-inspect` calls it
+first.
+
+### A widget is two blocks
+
+A wrapper block (`BlockContentOfWidget`, carrying layout, limit, viewId,
+autoAdded) with a link block inside it carrying the target. `BlockWidgetSet*`
+addresses the wrapper; removing a widget has to unlink the wrapper, because
+dropping only the inner link leaves an empty wrapper behind — heart has
+`widget.UnlinkWithWrapper` for exactly this.
+
+### Target ids are not validated, and the clients mint their own
+
+`widget.IsPredefinedWidgetTargetId` is consulted on **import only**. In v0.50.8
+it knows `favorite`, `set`, `recent` and `collection`; v0.51.x adds
+`allObjects`, `recentOpen`, `chat` and `bin`, with the note that chat and bin
+are minted by the clients and reach heart only inside stored widget objects.
+
+The consequence is import-only but real: `common.handleLinkBlock` turns every
+target id this function does not know into `addr.MissingObject`, and
+`WidgetObject.Init` then strips the link and its wrapper. Importing an app
+export into v0.50.8 therefore loses those widgets silently. heart's own fix
+notes 29 of 33 listing-widgets affected across a 77-space account.
+
+Reading a synced widget object is **not** affected: `Init` removes only links
+whose target is literally `addr.MissingObject`, so a stored `bin` or `chat`
+target survives. Modelling target ids as an enum would be wrong for the same
+reason the import broke — the vocabulary belongs to the clients.
+
+### Every import adds a widget, and deleted targets accumulate forever
+
+`import/processor.go` → `addRootCollectionWidget` creates a widget for the root
+collection after every import. Unchanged in v0.51.5.
+
+Nothing ever removes it again. `delete.go` cleans up two things when an object
+is deleted — the favourite link (`BeforeDelete` → `SetIsFavorite`) and the
+homepage (`unsetHomepageIfNeeded`) — and the widget link is not among them.
+`WidgetObject.Init` only looks for `addr.MissingObject`, while a deleted object
+keeps its real id in the link, so the widget survives every open. Also
+unchanged in v0.51.5.
+
+Measured in a working space: **73 widgets, 69 of them pointing at objects the
+API answers for with 410 Gone**, 2 pointing into the bin, 2 live. The bson
+timestamps in the block ids cluster on days when imports ran, in multiples of
+the four imports a test run performs. Every client hides them, so nobody
+notices — which is why `sidebar-inspect` leads with the counts and
+`sidebar-prune` exists, and why `object-import` removes the widget it caused
+unless `keep_widget` says otherwise.
+
+### Removing a widget goes through the inner block id
+
+`BlockListDelete` → `UnlinkBlock` → `basic.Unlinkable.Unlink`, which on a
+widget object is `WidgetObject.Unlink` → `widget.UnlinkWithWrapper`. That
+function walks from the block it is given to its parent, so handing it the
+inner link removes the wrapper too. Handing it the wrapper would unlink the
+wrapper alone. Verified live on one widget, then on 68: 73 widgets to 4, no
+orphan blocks left behind, performed by an account with editor permission —
+which also settles that editors may write the shared widget object.
+
+### Sidebar sections are not in the widget object
+
+The sections a client offers under "Manage Sections" (Unread, Home and Pinned,
+My Favorites, Recently edited, Types, Bin) do **not** appear as widget blocks:
+two live spaces contained no widget with a built-in target id at all, only links
+to objects. Their visibility and order are therefore client state, not space
+state, and no RPC reaches them. `BlockContentWidget` has no visibility field in
+either v0.50.8 or v0.51.5.
+
+### Favorites are not what the current clients show
+
+`detailservice.SetIsFavorite` (behind `ObjectSetIsFavorite`) writes a link into
+the **Home smartblock** via `objectLinksCollectionModify`, and `isFavorite` is
+declared `"source": "account"` — `DataSource account`, "stored in the account DB,
+means existing only for specific anytype account".
+
+Verified live in a shared space: the call succeeds, `object-flags` reports
+`favorite: true`, and another member's sidebar shows nothing. The current
+clients read "My Favorites" from the `personalFavorites` CRDT store in the
+**tech space** instead (`core/block/editor/personalfavorites/`), which is
+per-account and not shareable. `object-set-favorite` therefore affects only the
+account this server runs as.
+
+### Personal widgets are per account, and the id is computable
+
+`_personalWidgets_<spaceId, first dot replaced by underscore>`
+(`core/domain/id.go`) names a virtual object backed by that same tech-space
+store. Unlike the shared widget object it needs no `WorkspaceOpen`. It is also
+useless for configuring anyone else's sidebar: the tech space has no ACL and no
+members, so there is no path by which one account writes another's.
+
+### The shared widget object is genuinely shared
+
+`objectprovider.CreateMandatoryObjects` derives it with `NewUniqueKey(sbt, "")`
+— no identity in the key — so every member resolves the same id. Its object
+restrictions are `objRestrictAll.Remove(Restrictions_Blocks)`, identical to the
+Home smartblock's. An editor (not owner) was able to write the Home smartblock
+live, which is the closest available evidence that editors may write widgets
+too.
+
+---
+
 ## RPCs deliberately not offered
 
 ### `ObjectRelationListAvailable`

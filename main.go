@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.25.0"
+	serverVersion = "0.26.0"
 	protoVersion  = "2025-03-26"
 )
 
@@ -887,7 +887,8 @@ func (s *mcpServer) extraToolDefs() []any {
 	for _, group := range [][]any{
 		s.restToolDefs(), s.queryToolDefs(), s.blockToolDefs(),
 		s.tableToolDefs(), s.objectToolDefs(), s.transferToolDefs(),
-		s.extrasToolDefs(), s.spaceOpsToolDefs(), s.coverToolDefs(),
+		s.extrasToolDefs(), s.spaceOpsToolDefs(), s.sidebarToolDefs(),
+		s.coverToolDefs(),
 		s.usageToolDefs(), s.serverInfoToolDefs(),
 		s.debugToolDefs(), s.openAIFileToolDefs(), s.attachmentToolDefs(),
 	} {
@@ -904,7 +905,8 @@ func (s *mcpServer) extraDispatchers() []toolDispatcher {
 	return []toolDispatcher{
 		s.dispatchRestTool, s.dispatchQueryTool, s.dispatchBlockTool,
 		s.dispatchTableTool, s.dispatchObjectTool, s.dispatchTransferTool,
-		s.dispatchExtrasTool, s.dispatchSpaceOpsTool, s.dispatchCoverTool,
+		s.dispatchExtrasTool, s.dispatchSpaceOpsTool, s.dispatchSidebarTool,
+		s.dispatchCoverTool,
 		s.dispatchUsageTool, s.dispatchServerInfoTool,
 		s.dispatchDebugTool, s.dispatchAttachmentTool,
 	}

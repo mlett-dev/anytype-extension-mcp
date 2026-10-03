@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
@@ -57,8 +58,10 @@ func (s *mcpServer) transferToolDefs() []any {
 			}),
 		},
 		map[string]any{
-			"name":        "object-import",
-			"description": "Import external content into a space: markdown, HTML, plain text, CSV, an Anytype protobuf export, an Obsidian vault, or a whole Notion workspace. Files are read from the input directory shared with the host — stage them there first and check with file-list-input. This is the efficient path for bulk content; block-paste is better for a single page. IMPORTANT: Anytype runs the import in the background and reports nothing back — not a count, not even a failure. A successful call means the import was accepted, not that it worked. Always verify afterwards with search-space-compact, allowing a second or two for the objects to appear.",
+			"name": "object-import",
+			"description": "Import external content into a space: markdown, HTML, plain text, CSV, an Anytype protobuf export, an Obsidian vault, or a whole Notion workspace. Files are read from the input directory shared with the host — stage them there first and check with file-list-input. This is the efficient path for bulk content; block-paste is better for a single page.\n\n" +
+				"IMPORTANT: Anytype runs the import in the background and reports nothing back — not a count, not even a failure. A successful call means the import was accepted, not that it worked. Always verify afterwards with search-space-compact, allowing a second or two for the objects to appear.\n\n" +
+				"heart adds a sidebar widget for the import collection. Unlike the GUI, this tool removes it again unless keep_widget=true, because nothing ever prunes such a widget once its collection is deleted.",
 			"inputSchema": restSchema([]string{"space_id", "type"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"type":     enumProp("What is being imported.", anytypefiles.ImportTypeNames()),
@@ -74,6 +77,7 @@ func (s *mcpServer) transferToolDefs() []any {
 				"csv_first_row_is_header": map[string]any{"type": "boolean", "description": "For type=csv: treat the first row as property names.", "default": true},
 				"csv_delimiter":           strProp("For type=csv: column separator. Defaults to a comma."),
 				"csv_transposed":          map[string]any{"type": "boolean", "description": "For type=csv: rows and columns are swapped.", "default": false},
+				"keep_widget":             map[string]any{"type": "boolean", "description": "Keep the sidebar widget heart adds for the import collection.", "default": false},
 			}),
 		},
 		map[string]any{
@@ -335,13 +339,35 @@ func (s *mcpServer) toolObjectImport(args map[string]any) (map[string]any, error
 		return nil, err
 	}
 	defer client.Close()
+	ctx := context.Background()
 
-	result, err := client.ImportObjects(context.Background(), spaceID, anytypefiles.ImportOptions{
+	// An import with no collection grows no widget, so there is nothing to
+	// watch for and no reason to make the caller wait.
+	noCollection := optionalBool(args, "no_collection", false)
+	cleanWidget := !optionalBool(args, "keep_widget", false) && !noCollection
+	var widgetsID string
+	known := map[string]struct{}{}
+	if cleanWidget {
+		objects, err := client.ReadSystemObjects(ctx, spaceID)
+		if err != nil {
+			return nil, err
+		}
+		widgetsID = objects.WidgetsID
+		before, err := client.ReadSidebar(ctx, spaceID, widgetsID, "space", "all")
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range before.Widgets {
+			known[w.BlockID] = struct{}{}
+		}
+	}
+
+	result, err := client.ImportObjects(ctx, spaceID, anytypefiles.ImportOptions{
 		Type:                  importType,
 		Paths:                 serverPaths,
 		NotionAPIKey:          optionalString(args, "notion_api_key"),
 		UpdateExistingObjects: optionalBool(args, "update_existing", false),
-		NoCollection:          optionalBool(args, "no_collection", false),
+		NoCollection:          noCollection,
 		CollectionTitle:       optionalString(args, "collection_title"),
 		CsvUseFirstRowAsNames: optionalBool(args, "csv_first_row_is_header", true),
 		CsvDelimiter:          optionalString(args, "csv_delimiter"),
@@ -367,6 +393,22 @@ func (s *mcpServer) toolObjectImport(args map[string]any) (map[string]any, error
 	}
 	if len(hostPaths) > 0 {
 		out["paths"] = hostPaths
+	}
+	if cleanWidget {
+		removed, err := client.RemoveImportWidget(ctx, spaceID, widgetsID, known, 10*time.Second)
+		switch {
+		case err != nil:
+			out["widget_cleanup"] = fmt.Sprintf("failed: %v — run sidebar-prune", err)
+		case len(removed) == 0:
+			out["widget_cleanup"] = "pending: no widget appeared within 10s. The import may still add one; check with sidebar-inspect."
+		default:
+			ids := make([]string, 0, len(removed))
+			for _, w := range removed {
+				ids = append(ids, w.TargetID)
+			}
+			out["widget_cleanup"] = "removed"
+			out["widget_removed_targets"] = ids
+		}
 	}
 	return out, nil
 }

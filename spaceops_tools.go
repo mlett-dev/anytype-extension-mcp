@@ -50,7 +50,7 @@ func (s *mcpServer) spaceOpsToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "object-flags",
-			"description": "Report whether objects are favorited and whether they are in the bin — the counterpart of object-set-favorite and object-set-archived. Both are hidden relations that the REST object payload does not carry, and isArchived is not filterable there either, so this is the only way to check a flag before or after setting it. found=false means no object with that id exists in the space, which is not the same as a flag being off.",
+			"description": "Report whether objects are favorited and whether they are in the bin — the counterpart of object-set-favorite and object-set-archived. favorite reflects this account only, for the reason object-set-favorite explains. Both are hidden relations that the REST object payload does not carry, and isArchived is not filterable there either, so this is the only way to check a flag before or after setting it. found=false means no object with that id exists in the space, which is not the same as a flag being off.",
 			"inputSchema": restSchema([]string{"space_id", "object_ids"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"object_ids": map[string]any{

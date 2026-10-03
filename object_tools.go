@@ -37,8 +37,9 @@ func (s *mcpServer) objectToolDefs() []any {
 			}),
 		},
 		map[string]any{
-			"name":        "object-set-favorite",
-			"description": "Add objects to the Favorites section of the sidebar, or remove them from it.",
+			"name": "object-set-favorite",
+			"description": "Add objects to the Favorites section of the sidebar, or remove them from it.\n\n" +
+				"ONLY FOR THIS ACCOUNT, and only in the legacy place. The RPC writes a link into the space's Home smartblock and sets isFavorite, which is declared as account-scoped data (\"existing only for specific anytype account\"). Current clients read My Favorites from the personal favourites store in the tech space instead, so another member of a shared space sees nothing — verified live: the call succeeds, object-flags reports favorite=true, the other member's sidebar does not change. To put something in front of every member of a space, use a sidebar widget instead (see sidebar-inspect).",
 			"inputSchema": restSchema([]string{"space_id", "object_ids", "favorite"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"object_ids": map[string]any{
