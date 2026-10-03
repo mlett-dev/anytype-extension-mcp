@@ -849,6 +849,34 @@ too.
 
 ## RPCs deliberately not offered
 
+### Everything that lives in the tech space
+
+A server running as its own account cannot configure anyone else's client
+through these, because the tech space has no ACL and no members — it syncs
+between one account's devices only. They would report success and change
+nothing a person sees, which is worse than not existing:
+
+- `SpaceSetOrder` / `SpaceUnsetOrder` — the order of spaces in the sidebar.
+  `SetSpaceViewOrder` writes `spaceOrder` on the **space view**, a tech-space
+  object.
+- `PushNotificationSetSpaceMode` / `PushNotificationSetForceModeIds` — a
+  space's notification mode. `TechSpace().DoSpaceView(…)`.
+- `ChatReadMessages` / `ChatReadAll` / `ChatUnreadMessages` — the unread state
+  is a per-account read position.
+
+The same trap already cost a round of work on favourites, which do have an RPC
+here (`ObjectSetIsFavorite`) and are account-scoped all the same. The question
+to ask of any space-level RPC is therefore not "does it exist" but "does it
+write the space tree or the tech space".
+
+### `SpaceInviteGenerate` and the rest of the invite surface
+
+These write an ACL record (`aclClient.AddRecord`), and any-sync lets only an
+owner do that. A server joined as an editor would be refused by the network,
+not by heart, so the failure would surface late and unclearly. Offering them
+is a question about which permissions the server's account should have, not
+about tools.
+
 ### `ObjectRelationListAvailable`
 
 The RPC exists, but `ListAvailableRelations` in `core/block/editor.go` is a
