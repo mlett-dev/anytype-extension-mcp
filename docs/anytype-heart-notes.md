@@ -780,6 +780,11 @@ unless `keep_widget` says otherwise.
 - **`BlockWidgetSetTargetId` keeps the block.** It repoints the existing link
   rather than replacing it, so block and wrapper ids survive — verified live by
   repointing a widget at `bin` and back.
+- **`limit: 0` is not a documented reset.** heart stores the int as given and
+  attaches no meaning to zero; what a widget without a limit shows is the
+  client's own default. Verified live: setting 0 succeeds and the limit is
+  simply absent on the next read, indistinguishable from never having been
+  set.
 - **Reordering has no declarative RPC.** `BlockListMoveToExistingObject` moves
   one group at a time, so a wanted order is built as a chain: the first wrapper
   to the root as `InnerFirst`, each following one `Bottom` of its predecessor.
