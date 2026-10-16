@@ -180,8 +180,8 @@ func (s *mcpServer) toolDebugReceiveOpenAIFile(args map[string]any) (map[string]
 	if len(s.lastRawParams) > 0 {
 		var envelope map[string]any
 		if err := json.Unmarshal(s.lastRawParams, &envelope); err == nil {
-			out["raw_params_summary"] = summariseJSON(envelope)
-			out["call_meta"] = summariseJSON(envelope["_meta"])
+			out["raw_params_summary"] = summariseParams(envelope)
+			out["call_meta_keys"] = metaKeys(envelope["_meta"])
 		}
 	}
 
@@ -290,10 +290,10 @@ func (s *mcpServer) toolDebugReceiveFile(args map[string]any) (map[string]any, e
 		"uploaded":         false,
 	}
 
-	// The params as they came off the wire, not as they were parsed: _meta,
-	// unexpected keys and the exact JSON types are all part of the answer, and
-	// the map[string]any the dispatcher receives has already dropped some of
-	// that context.
+	// The params as they came off the wire, not as they were parsed: which _meta
+	// keys arrived, unexpected keys and the exact JSON types are all part of the
+	// answer, and the map[string]any the dispatcher receives has already dropped
+	// some of that context.
 	var envelope map[string]any
 	if len(rawParams) > 0 {
 		out["raw_params_bytes"] = len(rawParams)
@@ -304,12 +304,8 @@ func (s *mcpServer) toolDebugReceiveFile(args map[string]any) (map[string]any, e
 		out["raw_params_bytes"] = 0
 	}
 	if envelope != nil {
-		out["raw_params_summary"] = summariseJSON(envelope)
-		if meta, ok := envelope["_meta"]; ok {
-			out["call_meta"] = summariseJSON(meta)
-		} else {
-			out["call_meta"] = nil
-		}
+		out["raw_params_summary"] = summariseParams(envelope)
+		out["call_meta_keys"] = metaKeys(envelope["_meta"])
 	}
 
 	rawArgs := any(args)
@@ -745,6 +741,41 @@ func fetchReference(rawURL string, timeout time.Duration) ([]byte, string, error
 		return nil, resp.Status, fmt.Errorf("fetch returned %s", resp.Status)
 	}
 	return data, resp.Status, nil
+}
+
+// metaKeys reports which _meta keys a call carried, never their values.
+// ChatGPT sends the user's coarse location and pseudonymous user, session and
+// organization ids there on every call, and this answer ends up in the
+// conversation and in the server's stdout log.
+func metaKeys(meta any) any {
+	m, ok := meta.(map[string]any)
+	if !ok {
+		if meta == nil {
+			return nil
+		}
+		return jsonTypeOf(meta)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// summariseParams is summariseJSON for a tools/call envelope, with _meta
+// reduced to its keys.
+func summariseParams(envelope map[string]any) any {
+	meta, ok := envelope["_meta"]
+	if !ok {
+		return summariseJSON(envelope)
+	}
+	redacted := make(map[string]any, len(envelope))
+	for k, v := range envelope {
+		redacted[k] = v
+	}
+	redacted["_meta"] = metaKeys(meta)
+	return summariseJSON(redacted)
 }
 
 // summariseJSON echoes a value with long strings replaced by a description of
