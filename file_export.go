@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
 
 const (
@@ -32,6 +34,8 @@ const (
 	// An identical export is answered with the existing link only while that
 	// link still has this long to live.
 	minExportReuseLifetime = 5 * time.Minute
+
+	maxExportManyItems = 20
 )
 
 type exportManifest struct {
@@ -43,40 +47,125 @@ type exportManifest struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func (s *mcpServer) exportToolDefs() []any {
-	return []any{map[string]any{
-		"name":        "file-export",
-		"description": "Hand an Anytype file to the MCP client as a downloadable resource. Returns a native resource_link; the client retrieves the bytes through resources/read. Works for any file type up to 6 MiB (6291456 bytes), unchanged. The link expires 15 minutes after it was created; exporting the same unchanged file again returns the existing link. Use this to return files to ChatGPT; file-download only writes paths on the server. Files above the limit are refused; no preview, compression or truncation is performed.",
-		"inputSchema": restSchema([]string{"object_id"}, map[string]any{
-			"object_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 1024, "description": "Anytype file object ID."},
-			"filename":  map[string]any{"type": "string", "minLength": 1, "maxLength": 255, "description": "Optional download filename, without directories. Changes the name only, not the bytes."},
-		}),
-	}}
+func exportItemProperties() map[string]any {
+	return map[string]any{
+		"object_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 1024, "description": "Anytype file object ID."},
+		"filename":  map[string]any{"type": "string", "minLength": 1, "maxLength": 255, "description": "Optional download filename, without directories. Changes the name only, not the bytes."},
+	}
 }
 
-func (s *mcpServer) toolExport(args map[string]any) (nativeToolResult, error) {
+func (s *mcpServer) exportToolDefs() []any {
+	return []any{
+		map[string]any{
+			"name":        "file-export",
+			"description": "Hand an Anytype file to the MCP client as a downloadable resource. Returns a native resource_link; the client retrieves the bytes through resources/read. Works for any file type up to 6 MiB (6291456 bytes), unchanged. The link expires 15 minutes after it was created; exporting the same unchanged file again returns the existing link. Use this to return files to ChatGPT; file-download only writes paths on the server. Files above the limit are refused; no preview, compression or truncation is performed.",
+			"inputSchema": restSchema([]string{"object_id"}, exportItemProperties()),
+		},
+		map[string]any{
+			"name":        "file-export-many",
+			"description": fmt.Sprintf("Export up to %d Anytype files in one call, each as file-export does. Returns one resource_link per exported file, in item order. A file that cannot be exported is listed with its error in results; the others are still exported.", maxExportManyItems),
+			"inputSchema": restSchema([]string{"items"}, map[string]any{
+				"items": map[string]any{
+					"type": "array", "minItems": 1, "maxItems": maxExportManyItems,
+					"items": restSchema([]string{"object_id"}, exportItemProperties()),
+				},
+			}),
+		},
+	}
+}
+
+func parseExportArgs(args map[string]any) (objectID, filename string, err error) {
 	for key := range args {
 		if key != "object_id" && key != "filename" {
-			return nativeToolResult{}, fmt.Errorf("unknown argument: %s", key)
+			return "", "", fmt.Errorf("unknown argument: %s", key)
 		}
 	}
 	objectID, ok := args["object_id"].(string)
 	objectID = strings.TrimSpace(objectID)
 	if !ok || objectID == "" || len(objectID) > 1024 {
-		return nativeToolResult{}, errors.New("object_id must be a non-empty string of at most 1024 bytes")
+		return "", "", errors.New("object_id must be a non-empty string of at most 1024 bytes")
 	}
-	filename := ""
 	if value, present := args["filename"]; present {
-		var ok bool
-		filename, ok = value.(string)
-		if !ok {
-			return nativeToolResult{}, errors.New("filename must be a string")
+		if filename, ok = value.(string); !ok {
+			return "", "", errors.New("filename must be a string")
 		}
 		if err := validateExportFilename(filename); err != nil {
-			return nativeToolResult{}, err
+			return "", "", err
 		}
 	}
+	return objectID, filename, nil
+}
 
+func (s *mcpServer) toolExport(args map[string]any) (nativeToolResult, error) {
+	objectID, filename, err := parseExportArgs(args)
+	if err != nil {
+		return nativeToolResult{}, err
+	}
+	client, err := s.grpcClient()
+	if err != nil {
+		return nativeToolResult{}, err
+	}
+	defer client.Close()
+	return s.exportFile(client, objectID, filename)
+}
+
+// toolExportMany validates every item before exporting any, so a malformed
+// call changes nothing. Download, size and cache errors are per item.
+func (s *mcpServer) toolExportMany(args map[string]any) (nativeToolResult, error) {
+	for key := range args {
+		if key != "items" {
+			return nativeToolResult{}, fmt.Errorf("unknown argument: %s", key)
+		}
+	}
+	items, err := asObjectSlice(args["items"])
+	if err != nil {
+		return nativeToolResult{}, fmt.Errorf("items: %w", err)
+	}
+	if len(items) == 0 || len(items) > maxExportManyItems {
+		return nativeToolResult{}, fmt.Errorf("items must hold 1 to %d files", maxExportManyItems)
+	}
+	type exportItem struct{ objectID, filename string }
+	parsed := make([]exportItem, len(items))
+	for i, item := range items {
+		objectID, filename, err := parseExportArgs(item)
+		if err != nil {
+			return nativeToolResult{}, fmt.Errorf("items[%d]: %w", i, err)
+		}
+		parsed[i] = exportItem{objectID, filename}
+	}
+	client, err := s.grpcClient()
+	if err != nil {
+		return nativeToolResult{}, err
+	}
+	defer client.Close()
+
+	results := make([]map[string]any, 0, len(parsed))
+	var links []map[string]any
+	var failures []string
+	for i, item := range parsed {
+		exported, err := s.exportFile(client, item.objectID, item.filename)
+		if err != nil {
+			results = append(results, map[string]any{"index": i, "object_id": item.objectID, "error": err.Error()})
+			failures = append(failures, fmt.Sprintf("items[%d]: %v", i, err))
+			continue
+		}
+		entry := map[string]any{"index": i}
+		for key, value := range exported.Metadata {
+			entry[key] = value
+		}
+		results = append(results, entry)
+		links = append(links, exported.Content...)
+	}
+	if len(links) == 0 {
+		return nativeToolResult{}, errors.New("no file was exported: " + strings.Join(failures, "; "))
+	}
+	return nativeToolResult{
+		Metadata: map[string]any{"exported": len(links), "failed": len(failures), "results": results},
+		Content:  links,
+	}, nil
+}
+
+func (s *mcpServer) exportFile(client *anytypefiles.Client, objectID, filename string) (nativeToolResult, error) {
 	// Download into a unique shared directory, rather than renaming or deleting
 	// an existing file-download output. Heart may run as a different user.
 	outRoot, err := ensureDir(s.cfg.outRoot)
@@ -95,7 +184,7 @@ func (s *mcpServer) toolExport(args map[string]any) (nativeToolResult, error) {
 	if err != nil {
 		return nativeToolResult{}, err
 	}
-	download, err := s.downloadAnytypeFile(objectID, staging, serverStaging)
+	download, err := downloadAnytypeFileWith(client, objectID, staging, serverStaging)
 	if err != nil {
 		return nativeToolResult{}, err
 	}

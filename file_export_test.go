@@ -394,3 +394,85 @@ func TestFileExportCacheBudget(t *testing.T) {
 		t.Fatalf("entry cap not enforced: %v", err)
 	}
 }
+
+func TestFileExportMany(t *testing.T) {
+	files := map[string][]byte{
+		"picture.png":  {137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3},
+		"document.pdf": []byte("%PDF-1.7\nmany fixture\n%%EOF\n"),
+		"large.bin":    make([]byte, maxExportBytes+1),
+	}
+	server := exportTestServer(t, files)
+	call := func(items ...map[string]any) map[string]any {
+		t.Helper()
+		list := make([]any, len(items))
+		for i, item := range items {
+			list[i] = item
+		}
+		response := testRPC(t, server, "tools/call", map[string]any{"name": "file-export-many", "arguments": map[string]any{"items": list}})
+		if response.Error != nil {
+			t.Fatal(response.Error)
+		}
+		return response.Result.(map[string]any)
+	}
+
+	result := call(
+		map[string]any{"object_id": "picture.png", "filename": "Bild 1.png"},
+		map[string]any{"object_id": "large.bin"},
+		map[string]any{"object_id": "document.pdf"},
+		map[string]any{"object_id": "picture.png", "filename": "Bild 1.png"},
+	)
+	if result["isError"] != false {
+		t.Fatalf("partial failure failed the whole call: %#v", result)
+	}
+	var links []string
+	for _, block := range result["content"].([]map[string]any) {
+		if block["type"] == "resource_link" {
+			links = append(links, block["uri"].(string))
+		}
+	}
+	meta := result["structuredContent"].(map[string]any)
+	results := meta["results"].([]map[string]any)
+	if len(links) != 3 || meta["exported"] != 3 || meta["failed"] != 1 || len(results) != 4 {
+		t.Fatalf("unexpected result: %d links, %#v", len(links), meta)
+	}
+	if results[1]["index"] != 1 || !strings.Contains(results[1]["error"].(string), "6291456") || results[1]["uri"] != nil {
+		t.Fatalf("oversize item not reported in place: %#v", results[1])
+	}
+	if links[0] != links[2] || links[0] == links[1] || results[0]["uri"] != links[0] || results[2]["uri"] != links[1] {
+		t.Fatalf("links not in item order or duplicate not reused: %v", links)
+	}
+	for i, want := range []string{"picture.png", "document.pdf"} {
+		if data, _ := readExportBytes(t, server, links[i]); !bytes.Equal(data, files[want]) {
+			t.Fatalf("%s: resource bytes changed", want)
+		}
+	}
+	encoded, _ := json.Marshal(result)
+	if bytes.Contains(encoded, []byte(`"blob"`)) || len(encoded) > 8192 {
+		t.Fatalf("file bytes or oversized metadata in tools/call: %d bytes", len(encoded))
+	}
+
+	if failed := call(map[string]any{"object_id": "large.bin"}); failed["isError"] != true {
+		t.Fatalf("call without any export did not fail: %#v", failed)
+	}
+}
+
+func TestFileExportManyRejectsMalformedCalls(t *testing.T) {
+	server := &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	tooMany := make([]any, maxExportManyItems+1)
+	for i := range tooMany {
+		tooMany[i] = map[string]any{"object_id": "file"}
+	}
+	for _, args := range []map[string]any{
+		{}, {"items": "file"}, {"items": []any{}}, {"items": tooMany},
+		{"items": []any{map[string]any{"object_id": "file"}}, "stop_on_error": true},
+		{"items": []any{map[string]any{"object_id": "file"}, map[string]any{"object_id": "file", "filename": "../escape"}}},
+		{"items": []any{map[string]any{"object_id": "file", "path": "/arbitrary"}}},
+	} {
+		if _, err := server.toolExportMany(args); err == nil {
+			t.Fatalf("malformed call accepted: %#v", args)
+		}
+	}
+	if entries, _ := os.ReadDir(server.cfg.outRoot); len(entries) != 0 {
+		t.Fatalf("a rejected call touched the output root: %v", entries)
+	}
+}

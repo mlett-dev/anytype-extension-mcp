@@ -52,6 +52,7 @@ var toolAnnotations = map[string]toolHints{
 	"file-download":                    hintDestructive, // target_name renames over an existing file
 	"file-download-many":               hintDestructive,
 	"file-export":                      hintReadOnly, // only writes its own expiring cache
+	"file-export-many":                 hintReadOnly,
 	"file-upload-attachment":           openWorldTool(hintAdditive),
 	"file-stage-attachment":            openWorldTool(hintDestructive), // overwrite
 	"object-set-cover-from-attachment": openWorldTool(hintDestructive),

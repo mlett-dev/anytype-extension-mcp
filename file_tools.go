@@ -209,20 +209,20 @@ type downloadedFile struct {
 // downloadAnytypeFile is shared by local downloads and MCP resource exports.
 // The two roots refer to the same directory as seen by this process and heart.
 func (s *mcpServer) downloadAnytypeFile(objectID, hostRoot, serverRoot string) (downloadedFile, error) {
-	outRoot, err := ensureDir(hostRoot)
-	if err != nil {
-		return downloadedFile{}, fmt.Errorf("output root not usable: %w", err)
-	}
-
-	client, err := anytypefiles.NewClient(context.Background(), anytypefiles.Config{
-		GRPCAddress:  s.cfg.grpcAddr,
-		SessionToken: s.cfg.token,
-		Timeout:      s.cfg.timeout,
-	})
+	client, err := s.grpcClient()
 	if err != nil {
 		return downloadedFile{}, err
 	}
 	defer client.Close()
+	return downloadAnytypeFileWith(client, objectID, hostRoot, serverRoot)
+}
+
+// downloadAnytypeFileWith lets bulk tools share one gRPC connection.
+func downloadAnytypeFileWith(client *anytypefiles.Client, objectID, hostRoot, serverRoot string) (downloadedFile, error) {
+	outRoot, err := ensureDir(hostRoot)
+	if err != nil {
+		return downloadedFile{}, fmt.Errorf("output root not usable: %w", err)
+	}
 
 	serverOutRoot, err := ensureDir(serverRoot)
 	if err != nil {

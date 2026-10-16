@@ -1,6 +1,6 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 139 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 140 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
 
@@ -78,9 +78,10 @@ what the GUI can do.
 `object-version-show` `object-version-restore` `objects-modify-property`
 `template-create` `type-set-featured-properties`
 
-**Files (10)** — `file-info` `file-list-input` `file-list-output` `file-upload`
+**Files (11)** — `file-info` `file-list-input` `file-list-output` `file-upload`
 `file-download` `file-upload-many` `file-download-many`
 `file-stage-attachment` `file-upload-attachment` `file-export`
+`file-export-many`
 
 **Extras (10)** — `block-embed-create` `block-embed-set-text`
 `block-extract-to-object` `block-link-appearance` `block-relation-add`
@@ -221,7 +222,7 @@ Optional:
 
 The download target is always `ANYTYPE_FILES_OUT_ROOT`.
 
-## Tool: file-export and MCP resources
+## Tools: file-export, file-export-many and MCP resources
 
 Call `file-export` with an Anytype file `object_id` and optionally a plain
 `filename`. Any file type is accepted up to **6 MiB (6,291,456 bytes)**,
@@ -236,6 +237,15 @@ The client fetches the bytes with `resources/read`; that response contains
 `contents[].blob` (base64), never a text block or structured JSON containing
 the encoded file. A supporting host can materialize the resource as a file;
 ChatGPT attachment display and image previews depend on the client.
+
+`file-export-many` takes `items`, 1 to 20 entries of `object_id` and optional
+`filename`, and exports each like `file-export` over one gRPC connection. The
+result holds one `resource_link` per exported file in item order, and
+`structuredContent.results` lists every item by `index` with either the
+export metadata or its `error`. A malformed item rejects the whole call before
+anything is exported; a download, size or cache error affects only its item.
+The call fails only when no file could be exported. Whether a client fetches
+every link of one result is up to the client.
 
 Exports expire after **15 minutes**. Snapshots and manifests live in the
 reserved `.mcp-exports` directory under `ANYTYPE_FILES_OUT_ROOT`, so links

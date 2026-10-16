@@ -23,6 +23,8 @@ def run(s):
     s.check("MCP 2025-11-25 was negotiated", s.c.protocol_version == "2025-11-25")
     s.check("resources are advertised without unsupported subscriptions", s.c.capabilities.get("resources") == {})
     s.check("file-export is discoverable", "file-export" in s.c.tools)
+    s.check("file-export-many is discoverable", "file-export-many" in s.c.tools)
+    objects = {}
     fixtures = {
         "LIVETEST export.png": base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a+1cAAAAASUVORK5CYII="),
         "LIVETEST export.pdf": b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n",
@@ -35,6 +37,7 @@ def run(s):
             uploaded = s.c.call("file-upload", space_id=s.space_id, staged_path=f"livetest-file-export/{name}")
             object_id = uploaded["object_id"]
             s.track(object_id)
+            objects[name] = object_id
             response = s.c.rpc("tools/call", {"name": "file-export", "arguments": {"object_id": object_id, "filename": name}})
             result = response.get("result", {})
             if len(expected) > limit:
@@ -70,6 +73,25 @@ def run(s):
                 downloaded = s.c.call("file-download", object_id=object_id, target_name="livetest-file-export-download.png")
                 downloads.append("out/livetest-file-export-download.png")
                 s.check("existing file-download still returns a local path", downloaded.get("local_path", "").endswith("livetest-file-export-download.png"), downloaded)
+
+        # One call, several files: an oversized item fails alone and the links
+        # come back in item order, each readable from another connection.
+        many_names = ["LIVETEST export.png", "LIVETEST oversized.bin", "LIVETEST export.pdf"]
+        response = s.c.rpc("tools/call", {"name": "file-export-many", "arguments": {"items": [{"object_id": objects[n], "filename": "many " + n} for n in many_names]}})
+        result = response.get("result", {})
+        links = [c for c in result.get("content", []) if c.get("type") == "resource_link"]
+        meta = result.get("structuredContent") or {}
+        s.check("file-export-many: partial failure does not fail the call", result.get("isError") is False and meta.get("exported") == 2 and meta.get("failed") == 1, result)
+        s.check("file-export-many: oversized item reports its error in place", "6291456" in json.dumps((meta.get("results") or [{}, {}])[1]), meta)
+        s.check("file-export-many: one link per exported file, in item order", [l.get("name") for l in links] == ["many LIVETEST export.png", "many LIVETEST export.pdf"], links)
+        handles.extend(urllib.parse.urlparse(l["uri"]).netloc for l in links)
+        reader = Client()
+        try:
+            for link, name in zip(links, ["LIVETEST export.png", "LIVETEST export.pdf"]):
+                content = reader.rpc("resources/read", {"uri": link["uri"]}).get("result", {}).get("contents", [])
+                s.check(f"file-export-many: {name} bytes match", len(content) == 1 and base64.b64decode(content[0]["blob"], validate=True) == fixtures[name])
+        finally:
+            reader.close()
 
         for method, key in (("resources/list", "resources"), ("resources/templates/list", "resourceTemplates")):
             response = s.c.rpc(method)
