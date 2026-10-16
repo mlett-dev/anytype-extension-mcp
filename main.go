@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.29.0"
+	serverVersion = "0.30.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -294,7 +294,7 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, error) {
 func (s *mcpServer) allToolDefs() []any {
 	inputRootDesc := fmt.Sprintf("List files staged under the configured input root %q. Use this before upload. Reuse returned relative_path values verbatim for file-upload or file-upload-many, especially for spaces, umlauts, and special characters.", s.cfg.inRoot)
 	outputRootDesc := fmt.Sprintf("List files under the configured output root %q after downloads. This tool only lists local output files; it does not download from Anytype.", s.cfg.outRoot)
-	return append([]any{
+	return annotateTools(append([]any{
 		map[string]any{
 			"name":        "file-info",
 			"description": fmt.Sprintf("Show the currently configured roots and exact usage hints. input_root=%q, output_root=%q, server_input_root=%q, server_output_root=%q.", s.cfg.inRoot, s.cfg.outRoot, s.cfg.serverInRoot, s.cfg.serverOutRoot),
@@ -904,7 +904,7 @@ func (s *mcpServer) allToolDefs() []any {
 				},
 			}),
 		},
-	}, s.extraToolDefs()...)
+	}, s.extraToolDefs()...))
 }
 
 // extraToolDefs collects the tool groups that live outside the literal above.
