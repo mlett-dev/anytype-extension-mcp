@@ -1,8 +1,12 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 138 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 139 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
+
+Uses MCP `2025-11-25`, with `2025-06-18` compatibility. Initialization echoes
+either supported revision; requests for other revisions are offered
+`2025-11-25`. The client must support that revision to continue.
 
 ## Relationship to the official server
 
@@ -74,9 +78,9 @@ what the GUI can do.
 `object-version-show` `object-version-restore` `objects-modify-property`
 `template-create` `type-set-featured-properties`
 
-**Files (9)** — `file-info` `file-list-input` `file-list-output` `file-upload`
+**Files (10)** — `file-info` `file-list-input` `file-list-output` `file-upload`
 `file-download` `file-upload-many` `file-download-many`
-`file-stage-attachment` `file-upload-attachment`
+`file-stage-attachment` `file-upload-attachment` `file-export`
 
 **Extras (10)** — `block-embed-create` `block-embed-set-text`
 `block-extract-to-object` `block-link-appearance` `block-relation-add`
@@ -160,7 +164,7 @@ no keyring — set `ANYTYPE_SESSION_TOKEN` there. The REST tools use
 
 ## Getting files in and out
 
-There are two separate routes, and they solve different problems.
+There are separate routes for local paths, runtime-held uploads and MCP exports.
 
 **Files already on the server's disk.** `file-list-input` lists what is staged
 under `ANYTYPE_FILES_IN_ROOT`; `file-upload` takes a `staged_path` from that
@@ -215,6 +219,36 @@ Optional:
 - `target_name` (filename only, no path)
 
 The download target is always `ANYTYPE_FILES_OUT_ROOT`.
+
+## Tool: file-export and MCP resources
+
+Call `file-export` with an Anytype file `object_id` and optionally a plain
+`filename`. Any file type is accepted up to **6 MiB (6,291,456 bytes)**,
+inclusive. The original bytes are preserved; larger files fail without
+truncation or conversion. `file-preview` and larger-file transfer are not yet
+implemented.
+
+The result contains a native `content` block of type `resource_link` with an
+`anytype-export://<opaque-handle>/<filename>` URI, plus small metadata in text
+and `structuredContent`: name, MIME type, size, SHA-256 and `expires_at`.
+The client fetches the bytes with `resources/read`; that response contains
+`contents[].blob` (base64), never a text block or structured JSON containing
+the encoded file. A supporting host can materialize the resource as a file;
+ChatGPT attachment display and image previews depend on the client.
+
+Exports expire after **15 minutes**. Snapshots and manifests live in the
+reserved `.mcp-exports` directory under `ANYTYPE_FILES_OUT_ROOT`, so links
+remain readable across connections and container restarts when the output
+volume is shared. Expired snapshots are cleaned on the next export or when
+their expired URI is read. At 64 outstanding exports, new exports are refused
+until space is available. Private snapshots are excluded from file-list-output.
+
+The server advertises `resources: {}` with no subscriptions or list-change
+notifications. `resources/list` and `resources/templates/list` return empty
+lists: export links are returned on demand and are not a browsable catalog.
+Only valid, unexpired export URIs are readable; arbitrary server paths are not
+accepted. The existing `file-download` and `file-download-many` still return
+local paths and retain their existing behavior.
 
 ## Compact property updates
 

@@ -104,3 +104,8 @@ understandable without another run.
 | `08_cover_batch.py` | Cover from file, image icon, batch processing of the schema tools |
 | `09_usage.py` | Usage analysis and tag cleanup, including both dangerous cases |
 | `10_attachment.py` | The attachment route: staging, upload, cover, and its error paths |
+| `13_file_export.py` | MCP version negotiation, resource links, PNG/PDF/binary roundtrips across connections, exact 6 MiB boundary and oversized rejection |
+
+Run `python3 livetest/run.py file_export` for the focused resource-export
+suite. This verifies MCP transport against Anytype, not ChatGPT's attachment
+materialization or UI. Those require a follow-up call from ChatGPT.

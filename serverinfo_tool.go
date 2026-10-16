@@ -31,15 +31,17 @@ func (s *mcpServer) dispatchServerInfoTool(name string, args map[string]any) (ma
 
 func (s *mcpServer) toolServerInfo() (map[string]any, error) {
 	out := map[string]any{
-		"server":              serverName,
-		"version":             serverVersion,
-		"tool_count":          len(s.allToolDefs()),
-		"protocol":            protoVersion,
-		"toolset":             "full",
-		"api_version":         s.cfg.apiVersion,
-		"input_root":          s.cfg.inRoot,
-		"output_root":         s.cfg.outRoot,
-		"unsplash_configured": s.cfg.unsplashKey != "",
+		"server":                  serverName,
+		"version":                 serverVersion,
+		"tool_count":              len(s.allToolDefs()),
+		"protocol":                protoVersion,
+		"file_export_max_bytes":   maxExportBytes,
+		"file_export_ttl_seconds": int(exportTTL.Seconds()),
+		"toolset":                 "full",
+		"api_version":             s.cfg.apiVersion,
+		"input_root":              s.cfg.inRoot,
+		"output_root":             s.cfg.outRoot,
+		"unsplash_configured":     s.cfg.unsplashKey != "",
 	}
 	if s.cfg.leanToolset {
 		out["toolset"] = "lean"

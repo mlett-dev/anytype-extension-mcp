@@ -17,8 +17,8 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.28.0"
-	protoVersion  = "2025-03-26"
+	serverVersion = "0.29.0"
+	protoVersion  = "2025-11-25"
 )
 
 const iconPayloadDescription = "The object's icon. Three shapes are accepted: an emoji, {\"format\":\"emoji\",\"emoji\":\"🍰\"}; an uploaded image, {\"format\":\"file\",\"file\":\"<image object id from file-upload>\"}, which is how a custom picture becomes an icon; or a built-in symbol, {\"format\":\"icon\",\"name\":\"book\",\"color\":\"red\"}. The icon is a small square next to the title — for the wide banner above it use object-set-cover instead."
@@ -148,13 +148,27 @@ func (s *mcpServer) handleRequest(req rpcRequest) (rpcResponse, bool) {
 
 	switch req.Method {
 	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil || params.ProtocolVersion == "" {
+			return s.errorResponse(req.ID, -32602, "initialize requires protocolVersion"), req.ID != nil
+		}
+		// Both supported revisions use the same tools/resources wire format.
+		// Offer our preferred version when a client requests an unsupported one;
+		// the client decides whether it can continue (MCP version negotiation).
+		version := protoVersion
+		if params.ProtocolVersion == "2025-06-18" {
+			version = params.ProtocolVersion
+		}
 		return rpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]any{
-				"protocolVersion": protoVersion,
+				"protocolVersion": version,
 				"capabilities": map[string]any{
-					"tools": map[string]any{},
+					"tools":     map[string]any{},
+					"resources": map[string]any{},
 				},
 				"serverInfo": map[string]any{
 					"name":    serverName,
@@ -205,6 +219,17 @@ func (s *mcpServer) handleRequest(req rpcRequest) (rpcResponse, bool) {
 			ID:      req.ID,
 			Result:  toolResult(payload, false),
 		}, true
+	case "resources/list":
+		// Export handles are handed out by file-export, not enumerated. Tool
+		// resource links need not appear in resources/list.
+		return rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"resources": []any{}}}, req.ID != nil
+	case "resources/templates/list":
+		return rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"resourceTemplates": []any{}}}, req.ID != nil
+	case "resources/read":
+		if req.ID == nil {
+			return rpcResponse{}, false
+		}
+		return s.readExportResource(req), true
 	default:
 		if req.ID == nil {
 			return rpcResponse{}, false
@@ -213,8 +238,10 @@ func (s *mcpServer) handleRequest(req rpcRequest) (rpcResponse, bool) {
 	}
 }
 
-func (s *mcpServer) callTool(name string, args map[string]any) (map[string]any, error) {
+func (s *mcpServer) callTool(name string, args map[string]any) (any, error) {
 	switch name {
+	case "file-export":
+		return s.toolExport(args)
 	case "file-info":
 		return s.toolInfo(args)
 	case "file-list-input":
@@ -891,6 +918,7 @@ func (s *mcpServer) extraToolDefs() []any {
 		s.coverToolDefs(),
 		s.usageToolDefs(), s.serverInfoToolDefs(),
 		s.debugToolDefs(), s.openAIFileToolDefs(), s.attachmentToolDefs(),
+		s.exportToolDefs(),
 	} {
 		defs = append(defs, group...)
 	}
@@ -912,7 +940,19 @@ func (s *mcpServer) extraDispatchers() []toolDispatcher {
 	}
 }
 
+// nativeToolResult keeps MCP content blocks out of the JSON-to-text wrapper.
+// Only the small metadata gets a text fallback and structuredContent entry.
+type nativeToolResult struct {
+	Metadata map[string]any
+	Content  []map[string]any
+}
+
 func toolResult(payload any, isError bool) map[string]any {
+	var nativeContent []map[string]any
+	if native, ok := payload.(nativeToolResult); ok {
+		payload = native.Metadata
+		nativeContent = native.Content
+	}
 	encoded, err := json.Marshal(payload)
 	text := ""
 	if err != nil {
@@ -922,12 +962,12 @@ func toolResult(payload any, isError bool) map[string]any {
 	}
 
 	return map[string]any{
-		"content": []map[string]any{
+		"content": append([]map[string]any{
 			{
 				"type": "text",
 				"text": text,
 			},
-		},
+		}, nativeContent...),
 		"structuredContent": payload,
 		"isError":           isError,
 	}

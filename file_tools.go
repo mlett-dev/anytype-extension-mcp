@@ -46,6 +46,7 @@ func (s *mcpServer) toolInfo(args map[string]any) (map[string]any, error) {
 		},
 		"download_usage": map[string]any{
 			"examples": []string{
+				"Call file-export to hand a file up to 6 MiB to the MCP client as a resource",
 				"Call file-download with target_name",
 				"Call file-download-many for bulk download",
 				"Check output using file-list-output",
@@ -84,7 +85,7 @@ func (s *mcpServer) toolListOutput(args map[string]any) (map[string]any, error) 
 	includeDirs := optionalBool(args, "include_dirs", false)
 	limit := optionalInt(args, "limit", 500)
 
-	entries, err := listEntriesUnderRoot(s.cfg.outRoot, s.cfg.serverOutRoot, recursive, includeDirs, limit)
+	entries, err := listEntriesUnderRoot(s.cfg.outRoot, s.cfg.serverOutRoot, recursive, includeDirs, limit, exportCacheDirName)
 	if err != nil {
 		return nil, err
 	}
@@ -178,9 +179,39 @@ func (s *mcpServer) toolDownload(args map[string]any) (map[string]any, error) {
 		}
 	}
 
-	outRoot, err := ensureDir(s.cfg.outRoot)
+	download, err := s.downloadAnytypeFile(objectID, s.cfg.outRoot, s.cfg.serverOutRoot)
 	if err != nil {
-		return nil, fmt.Errorf("output root not usable: %w", err)
+		return nil, err
+	}
+	finalPath := download.localPath
+	if targetName != "" {
+		// Preserve file-download's output-root naming even when heart returns
+		// a file in a subdirectory.
+		outRoot, err := filepath.Abs(s.cfg.outRoot)
+		if err != nil {
+			return nil, err
+		}
+		finalPath = filepath.Join(outRoot, targetName)
+		if err := os.Rename(download.localPath, finalPath); err != nil {
+			return nil, fmt.Errorf("failed to rename downloaded file: %w", err)
+		}
+	}
+	return map[string]any{
+		"object_id": objectID, "local_path": finalPath, "server_path": download.serverPath,
+	}, nil
+}
+
+type downloadedFile struct {
+	localPath  string
+	serverPath string
+}
+
+// downloadAnytypeFile is shared by local downloads and MCP resource exports.
+// The two roots refer to the same directory as seen by this process and heart.
+func (s *mcpServer) downloadAnytypeFile(objectID, hostRoot, serverRoot string) (downloadedFile, error) {
+	outRoot, err := ensureDir(hostRoot)
+	if err != nil {
+		return downloadedFile{}, fmt.Errorf("output root not usable: %w", err)
 	}
 
 	client, err := anytypefiles.NewClient(context.Background(), anytypefiles.Config{
@@ -189,13 +220,13 @@ func (s *mcpServer) toolDownload(args map[string]any) (map[string]any, error) {
 		Timeout:      s.cfg.timeout,
 	})
 	if err != nil {
-		return nil, err
+		return downloadedFile{}, err
 	}
 	defer client.Close()
 
-	serverOutRoot, err := ensureDir(s.cfg.serverOutRoot)
+	serverOutRoot, err := ensureDir(serverRoot)
 	if err != nil {
-		return nil, fmt.Errorf("server output root not usable: %w", err)
+		return downloadedFile{}, fmt.Errorf("server output root not usable: %w", err)
 	}
 
 	downloadResp, err := client.DownloadFile(context.Background(), anytypefiles.DownloadRequest{
@@ -203,22 +234,22 @@ func (s *mcpServer) toolDownload(args map[string]any) (map[string]any, error) {
 		Path:     serverOutRoot,
 	})
 	if err != nil {
-		return nil, err
+		return downloadedFile{}, err
 	}
 
 	rawLocalPath := strings.TrimSpace(downloadResp.LocalPath)
 	if rawLocalPath == "" {
-		return nil, fmt.Errorf("download returned empty local path")
+		return downloadedFile{}, fmt.Errorf("download returned empty local path")
 	}
 
 	serverLocalPath, err := normalizeUnderRoot(serverOutRoot, rawLocalPath)
 	if err != nil {
-		return nil, fmt.Errorf("download returned path outside server output root: %w", err)
+		return downloadedFile{}, fmt.Errorf("download returned path outside server output root: %w", err)
 	}
 
 	localPath, err := mapServerPathToHostPath(serverOutRoot, outRoot, serverLocalPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to map downloaded path to host output root: %w", err)
+		return downloadedFile{}, fmt.Errorf("failed to map downloaded path to host output root: %w", err)
 	}
 
 	if _, err := os.Stat(localPath); err != nil {
@@ -227,25 +258,13 @@ func (s *mcpServer) toolDownload(args map[string]any) (map[string]any, error) {
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		return nil, fmt.Errorf(
+		return downloadedFile{}, fmt.Errorf(
 			"download reported server path %q mapped to host path %q (serverOutRoot=%q, outRoot=%q, entries=%v): %w",
 			rawLocalPath, localPath, serverOutRoot, outRoot, names, err,
 		)
 	}
 
-	finalPath := localPath
-	if targetName != "" {
-		finalPath = filepath.Join(outRoot, targetName)
-		if err := os.Rename(localPath, finalPath); err != nil {
-			return nil, fmt.Errorf("failed to rename downloaded file: %w", err)
-		}
-	}
-
-	return map[string]any{
-		"object_id":   objectID,
-		"local_path":  finalPath,
-		"server_path": serverLocalPath,
-	}, nil
+	return downloadedFile{localPath: localPath, serverPath: serverLocalPath}, nil
 }
 
 func (s *mcpServer) toolUploadMany(args map[string]any) (map[string]any, error) {
@@ -662,7 +681,7 @@ func mapServerPathToHostPath(serverRoot string, hostRoot string, serverPath stri
 	return filepath.Join(hostRoot, rel), nil
 }
 
-func listEntriesUnderRoot(hostRoot string, serverRoot string, recursive bool, includeDirs bool, limit int) ([]map[string]any, error) {
+func listEntriesUnderRoot(hostRoot string, serverRoot string, recursive bool, includeDirs bool, limit int, excludedNames ...string) ([]map[string]any, error) {
 	hostRootAbs, err := ensureDir(hostRoot)
 	if err != nil {
 		return nil, err
@@ -672,6 +691,10 @@ func listEntriesUnderRoot(hostRoot string, serverRoot string, recursive bool, in
 		entry listedEntry
 	}
 	rows := make([]row, 0)
+	excluded := make(map[string]bool, len(excludedNames))
+	for _, name := range excludedNames {
+		excluded[name] = true
+	}
 
 	addEntry := func(path string, info os.FileInfo) error {
 		rel, err := filepath.Rel(hostRootAbs, path)
@@ -707,6 +730,12 @@ func listEntriesUnderRoot(hostRoot string, serverRoot string, recursive bool, in
 			if path == hostRootAbs {
 				return nil
 			}
+			if filepath.Dir(path) == hostRootAbs && excluded[info.Name()] {
+				if info.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 			if info.IsDir() && !includeDirs {
 				return nil
 			}
@@ -721,6 +750,9 @@ func listEntriesUnderRoot(hostRoot string, serverRoot string, recursive bool, in
 			return nil, err
 		}
 		for _, e := range entries {
+			if excluded[e.Name()] {
+				continue
+			}
 			info, err := e.Info()
 			if err != nil {
 				return nil, err

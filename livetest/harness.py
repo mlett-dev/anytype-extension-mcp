@@ -79,12 +79,16 @@ class Client:
         init = self.rpc(
             "initialize",
             {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {"name": "livetest", "version": "1"},
             },
         )
         self.server_info = init["result"]["serverInfo"]
+        self.protocol_version = init["result"]["protocolVersion"]
+        self.capabilities = init["result"]["capabilities"]
+        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+        self.proc.stdin.flush()
         self.tools = [t["name"] for t in self.rpc("tools/list")["result"]["tools"]]
 
     def rpc(self, method, params=None):
