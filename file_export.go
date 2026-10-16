@@ -21,8 +21,17 @@ const (
 	maxExportBytes       = 6 << 20
 	exportTTL            = 15 * time.Minute
 	exportCacheDirName   = ".mcp-exports"
-	maxCachedExports     = 64
 	maxExportManifestLen = 16 << 10
+
+	// The cache is bounded by bytes, so many small images fit; the entry cap
+	// only bounds the directory scan on every export. The byte budget is the
+	// old worst case of 64 full-size exports.
+	maxCachedExports    = 512
+	maxExportCacheBytes = 64 * maxExportBytes
+
+	// An identical export is answered with the existing link only while that
+	// link still has this long to live.
+	minExportReuseLifetime = 5 * time.Minute
 )
 
 type exportManifest struct {
@@ -37,7 +46,7 @@ type exportManifest struct {
 func (s *mcpServer) exportToolDefs() []any {
 	return []any{map[string]any{
 		"name":        "file-export",
-		"description": "Hand an Anytype file to the MCP client as a downloadable resource. Returns a native resource_link; the client retrieves the bytes through resources/read. Works for any file type up to 6 MiB (6291456 bytes), unchanged. The link expires after 15 minutes. Use this to return files to ChatGPT; file-download only writes paths on the server. Files above the limit are refused; no preview, compression or truncation is performed.",
+		"description": "Hand an Anytype file to the MCP client as a downloadable resource. Returns a native resource_link; the client retrieves the bytes through resources/read. Works for any file type up to 6 MiB (6291456 bytes), unchanged. The link expires 15 minutes after it was created; exporting the same unchanged file again returns the existing link. Use this to return files to ChatGPT; file-download only writes paths on the server. Files above the limit are refused; no preview, compression or truncation is performed.",
 		"inputSchema": restSchema([]string{"object_id"}, map[string]any{
 			"object_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 1024, "description": "Anytype file object ID."},
 			"filename":  map[string]any{"type": "string", "minLength": 1, "maxLength": 255, "description": "Optional download filename, without directories. Changes the name only, not the bytes."},
@@ -154,8 +163,22 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 	if err != nil {
 		return nativeToolResult{}, err
 	}
-	if active >= maxCachedExports {
-		return nativeToolResult{}, errors.New("export cache is full; retry after existing exports expire (15 minutes)")
+	sum := sha256Hex(data)
+	var used int64
+	var nextExpiry time.Time
+	for _, export := range active {
+		m := export.manifest
+		if m.ObjectID == objectID && m.Filename == name && m.SHA256 == sum && m.SizeBytes == int64(len(data)) &&
+			m.ExpiresAt.Sub(now) >= minExportReuseLifetime && exportDataIntact(cache, export.handle, m) {
+			return exportResult(export.handle, m), nil
+		}
+		used += m.SizeBytes
+		if !m.ExpiresAt.IsZero() && (nextExpiry.IsZero() || m.ExpiresAt.Before(nextExpiry)) {
+			nextExpiry = m.ExpiresAt
+		}
+	}
+	if len(active) >= maxCachedExports || used+int64(len(data)) > maxExportCacheBytes {
+		return nativeToolResult{}, exportCacheFullError(len(active), used, nextExpiry, now)
 	}
 	var random [24]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -173,7 +196,7 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 	}()
 	manifest := exportManifest{
 		ObjectID: objectID, Filename: name, MIMEType: sniffMIME(name, data),
-		SizeBytes: int64(len(data)), SHA256: sha256Hex(data), ExpiresAt: now.UTC().Add(exportTTL),
+		SizeBytes: int64(len(data)), SHA256: sum, ExpiresAt: now.UTC().Add(exportTTL),
 	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
@@ -186,15 +209,34 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 		return nativeToolResult{}, err
 	}
 	committed = true
-	uri := (&url.URL{Scheme: "anytype-export", Host: handle, Path: "/" + name}).String()
+	return exportResult(handle, manifest), nil
+}
+
+func exportResult(handle string, manifest exportManifest) nativeToolResult {
+	uri := (&url.URL{Scheme: "anytype-export", Host: handle, Path: "/" + manifest.Filename}).String()
 	return nativeToolResult{
 		Metadata: map[string]any{
-			"object_id": objectID, "uri": uri, "filename": name, "mime_type": manifest.MIMEType,
+			"object_id": manifest.ObjectID, "uri": uri, "filename": manifest.Filename, "mime_type": manifest.MIMEType,
 			"size_bytes": manifest.SizeBytes, "sha256": manifest.SHA256,
-			"expires_at": manifest.ExpiresAt.Format(time.RFC3339),
+			"expires_at": manifest.ExpiresAt.UTC().Format(time.RFC3339),
 		},
-		Content: []map[string]any{{"type": "resource_link", "uri": uri, "name": name, "mimeType": manifest.MIMEType, "size": manifest.SizeBytes}},
-	}, nil
+		Content: []map[string]any{{"type": "resource_link", "uri": uri, "name": manifest.Filename, "mimeType": manifest.MIMEType, "size": manifest.SizeBytes}},
+	}
+}
+
+// exportDataIntact is a cheap check before a link is handed out again;
+// resources/read still verifies the SHA-256.
+func exportDataIntact(cache *os.Root, handle string, manifest exportManifest) bool {
+	info, err := cache.Lstat(filepath.Join(handle, "data"))
+	return err == nil && info.Mode().IsRegular() && info.Size() == manifest.SizeBytes
+}
+
+func exportCacheFullError(count int, used int64, nextExpiry, now time.Time) error {
+	msg := fmt.Sprintf("export cache is full: %d of %d exports, %.1f of %d MiB in use", count, maxCachedExports, float64(used)/(1<<20), maxExportCacheBytes>>20)
+	if !nextExpiry.IsZero() {
+		msg += fmt.Sprintf("; the next export expires at %s (in %s)", nextExpiry.UTC().Format(time.RFC3339), nextExpiry.Sub(now).Round(time.Second))
+	}
+	return errors.New(msg)
 }
 
 func exportSizeError(size int64) error {
@@ -250,19 +292,26 @@ func readExportManifest(cache *os.Root, handle string) (exportManifest, error) {
 	return manifest, err
 }
 
+// cachedExport is an unexpired cache entry. manifest is zero while a snapshot
+// is still being written or when its manifest is unreadable.
+type cachedExport struct {
+	handle   string
+	manifest exportManifest
+}
+
 // Expired exports and abandoned partial snapshots are removed lazily on the
 // next export. Unknown names are left alone; this directory is not a catalog.
-func cleanupFileExports(cache *os.Root, now time.Time) (int, error) {
+func cleanupFileExports(cache *os.Root, now time.Time) ([]cachedExport, error) {
 	dir, err := cache.Open(".")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer dir.Close()
 	entries, err := dir.ReadDir(-1)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	active := 0
+	var active []cachedExport
 	for _, entry := range entries {
 		if !validExportHandle(entry.Name()) {
 			continue
@@ -277,9 +326,12 @@ func cleanupFileExports(cache *os.Root, now time.Time) (int, error) {
 			if err := cache.RemoveAll(entry.Name()); err != nil {
 				return active, err
 			}
-		} else {
-			active++
+			continue
 		}
+		if err != nil {
+			manifest = exportManifest{}
+		}
+		active = append(active, cachedExport{handle: entry.Name(), manifest: manifest})
 	}
 	return active, nil
 }

@@ -241,8 +241,12 @@ Exports expire after **15 minutes**. Snapshots and manifests live in the
 reserved `.mcp-exports` directory under `ANYTYPE_FILES_OUT_ROOT`, so links
 remain readable across connections and container restarts when the output
 volume is shared. Expired snapshots are cleaned on the next export or when
-their expired URI is read. At 64 outstanding exports, new exports are refused
-until space is available. Private snapshots are excluded from file-list-output.
+their expired URI is read. Exporting the same unchanged file again (same
+`object_id`, filename and SHA-256) returns the existing link while it has at
+least 5 minutes left, instead of storing another snapshot. The cache holds up
+to 384 MiB in at most 512 exports; beyond that, new exports are refused with
+the time the next export expires. Private snapshots are excluded from
+file-list-output.
 
 The server advertises `resources: {}` with no subscriptions or list-change
 notifications. `resources/list` and `resources/templates/list` return empty

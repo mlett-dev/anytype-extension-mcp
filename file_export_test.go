@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
@@ -283,5 +284,113 @@ func TestFileExportExpiryIntegrityAndConfinement(t *testing.T) {
 	}
 	if _, err := server.createFileExport("fixture", "escaped.bin", sourceRoot, link, time.Now()); err == nil {
 		t.Fatal("export followed a symlink outside its staging root")
+	}
+}
+
+func writeExportSource(t *testing.T, data string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "source.bin")
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return root, path
+}
+
+func exportHandle(t *testing.T, server *mcpServer, objectID, name, data string, now time.Time) string {
+	t.Helper()
+	root, path := writeExportSource(t, data)
+	result, err := server.createFileExport(objectID, name, root, path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, _ := url.Parse(result.Metadata["uri"].(string))
+	return uri.Host
+}
+
+func TestFileExportReusesIdenticalExport(t *testing.T) {
+	server := &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	now := time.Now()
+	first := exportHandle(t, server, "object", "photo.jpg", "jpeg bytes", now)
+	if again := exportHandle(t, server, "object", "photo.jpg", "jpeg bytes", now.Add(time.Minute)); again != first {
+		t.Fatal("identical export created a second snapshot")
+	}
+	for _, other := range []struct{ objectID, name, data string }{
+		{"object", "photo.jpg", "changed bytes"},
+		{"object", "renamed.jpg", "jpeg bytes"},
+		{"other-object", "photo.jpg", "jpeg bytes"},
+	} {
+		if exportHandle(t, server, other.objectID, other.name, other.data, now) == first {
+			t.Fatalf("export of different file reused the link: %+v", other)
+		}
+	}
+	if exportHandle(t, server, "object", "photo.jpg", "jpeg bytes", now.Add(exportTTL-minExportReuseLifetime+time.Second)) == first {
+		t.Fatal("reused a link that is about to expire")
+	}
+
+	later := now.Add(time.Hour)
+	kept := exportHandle(t, server, "object", "kept.jpg", "jpeg bytes", later)
+	if err := os.Remove(filepath.Join(server.cfg.outRoot, exportCacheDirName, kept, "data")); err != nil {
+		t.Fatal(err)
+	}
+	if exportHandle(t, server, "object", "kept.jpg", "jpeg bytes", later) == kept {
+		t.Fatal("reused a link whose snapshot is gone")
+	}
+}
+
+// fillExportCache writes count valid manifests that each claim size bytes,
+// without the bytes, so the budget can be tested without writing 384 MiB.
+func fillExportCache(t *testing.T, server *mcpServer, count int, size int64, expires time.Time) {
+	t.Helper()
+	dir := filepath.Join(server.cfg.outRoot, exportCacheDirName)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < count; i++ {
+		handle := fmt.Sprintf("%048x", i+1)
+		encoded, _ := json.Marshal(exportManifest{
+			ObjectID: "filler", Filename: "filler.bin", MIMEType: "application/octet-stream",
+			SizeBytes: size, SHA256: strings.Repeat("0", 64), ExpiresAt: expires,
+		})
+		if err := os.Mkdir(filepath.Join(dir, handle), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, handle, "manifest.json"), encoded, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestFileExportCacheBudget(t *testing.T) {
+	now := time.Now()
+	root, path := writeExportSource(t, "small image")
+	export := func(server *mcpServer) error {
+		_, err := server.createFileExport("object", "photo.jpg", root, path, now)
+		return err
+	}
+
+	// A burst of small images, as ChatGPT sends them, stays far below the budget.
+	server := &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	fillExportCache(t, server, 100, 350<<10, now.Add(exportTTL))
+	if err := export(server); err != nil {
+		t.Fatalf("100 small exports filled the cache: %v", err)
+	}
+
+	server = &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	fillExportCache(t, server, 63, maxExportBytes, now.Add(exportTTL))
+	if err := export(server); err != nil {
+		t.Fatalf("export within the byte budget refused: %v", err)
+	}
+	server = &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	fillExportCache(t, server, 64, maxExportBytes, now.Add(4*time.Minute))
+	err := export(server)
+	if err == nil || !strings.Contains(err.Error(), "384.0 of 384 MiB") || !strings.Contains(err.Error(), "(in 4m0s)") {
+		t.Fatalf("byte budget not enforced or not explained: %v", err)
+	}
+
+	server = &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	fillExportCache(t, server, maxCachedExports, 1, now.Add(exportTTL))
+	if err := export(server); err == nil || !strings.Contains(err.Error(), "512 of 512 exports") {
+		t.Fatalf("entry cap not enforced: %v", err)
 	}
 }
