@@ -30,7 +30,7 @@ package main
 // zero-argument call also succeeds, which is why every argument is optional:
 // without that control, "nothing arrived" cannot be told apart from "the call
 // was rejected". "inline_base64" means the runtime had no channel either and
-// the model fell back to text, against the instruction in the description.
+// the model fell back to text.
 // Anything else — a URI, a handle, a structured reference — is a real finding
 // and the shape it reports is what a non-base64 upload path would be built on.
 
@@ -64,14 +64,10 @@ func (s *mcpServer) debugToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name": "debug-receive-file",
-			"description": "Diagnostic only: reports what a file handed to this tool actually looks like when it arrives, and uploads nothing anywhere. " +
-				"Use it to answer one question — can a file reach this server without its bytes being written into the tool call as text? " +
-				"DO NOT base64-encode anything for this tool, and do not paste file content into any field. " +
-				"Attach or pass the file the way your runtime offers, if it offers a way at all. " +
-				"If the only thing you could do is turn the file into text, then pass NO file argument at all and say so in `note` — " +
-				"that answer is the useful result, and a text copy of the file would destroy it. " +
-				"Calling this with no arguments whatsoever is valid and is the control case. " +
-				"Returns the filename, MIME type, size and SHA-256 it was able to determine, plus the kind of reference that arrived and the raw call parameters with long strings summarised.",
+			"description": "Diagnostic. Inspects a file reference passed to it and reports the reference kind, filename, MIME type, size and SHA-256, plus the call parameters with long strings shortened. " +
+				"Creates nothing in Anytype. " +
+				"File content passed as text (base64, data: URI) is only measured and reported as inline_base64 or inline_data_uri. " +
+				"All arguments are optional; a call without arguments is the control case.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				// Deliberately not restSchema: additionalProperties is open
@@ -84,7 +80,7 @@ func (s *mcpServer) debugToolDefs() []any {
 				"properties": map[string]any{
 					"file": map[string]any{
 						"type":        "object",
-						"description": "The file itself, as a reference — whatever object shape your runtime uses for an attachment. Do not construct one by hand and do not put encoded content in it. Every field is optional; send what the runtime gives you.",
+						"description": "File reference in the runtime's own attachment shape. All fields optional.",
 						"properties": map[string]any{
 							"name":      strProp("Filename, if known."),
 							"mime_type": strProp("Media type, if known."),
@@ -94,11 +90,11 @@ func (s *mcpServer) debugToolDefs() []any {
 						},
 						"additionalProperties": true,
 					},
-					"file_reference": strProp("A file reference as a bare string, if that is the only shape available: a URI, a handle or an id. This is a pointer to content, never content. Do not put a data: URI or base64 here — that is content in disguise."),
-					"note":           strProp("What you attempted and what your runtime allowed. Say so here if there was no way to pass a file without encoding it as text — that is the result this test is looking for."),
+					"file_reference": strProp("File reference as a string: URI, handle or id. A data: URI or base64 is content, not a reference."),
+					"note":           strProp("Free-text note on how the file was passed, e.g. that the runtime offered no reference."),
 					"fetch_reference": map[string]any{
 						"type":        "boolean",
-						"description": "Whether to try fetching a http/https reference to measure the real bytes. On by default. Public hosts only; a private or loopback address is refused, since this server sits inside the Anytype container's network.",
+						"description": fmt.Sprintf("Fetch an http/https reference to measure the real bytes, up to %s. Public hosts only; private and loopback addresses are refused.", maxDecodedSize),
 						"default":     true,
 					},
 				},
@@ -144,11 +140,8 @@ func (s *mcpServer) openAIFileToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name": "debug-receive-openai-file",
-			"description": "Diagnostic only: takes a ChatGPT file as a real file argument and reports what arrived. Uploads nothing. " +
-				"Do NOT construct the file object by hand and do NOT put base64 anywhere — just select the file (for example an image you just generated) as the `file` argument and let the runtime fill it in. " +
-				"The server then fetches download_url itself, so the bytes never pass through the conversation. " +
-				"Returns file name, MIME type (declared and sniffed from the content), size and SHA-256. " +
-				"If this works, it is the transport that replaces base64; debug-receive-file remains the open-ended prober for everything else.",
+			"description": fmt.Sprintf("Diagnostic. `file` is resolved by the runtime (openai/fileParams); the server downloads it from download_url, up to %s, and reports file name, declared and detected MIME type, size and SHA-256. ", maxDecodedSize) +
+				"Creates nothing in Anytype. Tests the transport the *-attachment tools use.",
 			"inputSchema": map[string]any{
 				"type":  "object",
 				"$defs": openAIFileParamDefs(),
@@ -432,7 +425,7 @@ func dedupeByPath(candidates []fileCandidate) []fileCandidate {
 func verdictFor(c fileCandidate, resolved bool) string {
 	switch c.Kind {
 	case "inline_base64", "inline_data_uri":
-		return "The file arrived as encoded text inside the tool arguments, which is the path this test was trying to avoid: those bytes passed through the model's context and were paid for as tokens. It means no attachment channel was available (or none was used); this server no longer accepts encoded content, so there is no upload route for it. Note that the tool description explicitly asked for no encoding, so this is a fallback, not a capability."
+		return "The file arrived as encoded text inside the tool arguments, which is the path this test was trying to avoid: those bytes passed through the model's context and were paid for as tokens. It means no attachment channel was available (or none was used); this server no longer accepts encoded content, so there is no upload route for it."
 	case "remote_uri":
 		if resolved {
 			return "The file arrived as a URL that this server could fetch itself — the bytes never entered the tool arguments. This is a working non-base64 path: a real upload tool would take the reference, fetch it here, and hand it to Anytype."

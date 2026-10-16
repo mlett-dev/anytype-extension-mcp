@@ -36,10 +36,12 @@ import (
 	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
 
-// maxDecodedBytes caps how much content one call may bring in. It is a guard
-// against a runaway allocation, not a policy — the fetch in fetchReference
-// stops here rather than reading an unbounded body.
+// maxDecodedBytes caps how much content one call may bring in: the fetch in
+// fetchReference stops here rather than reading an unbounded body. It is the
+// documented upload limit of the *-attachment tools.
 const maxDecodedBytes = 24 << 20
+
+var maxDecodedSize = fmt.Sprintf("%d MiB (%d bytes)", maxDecodedBytes>>20, maxDecodedBytes)
 
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)

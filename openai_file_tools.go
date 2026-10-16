@@ -48,7 +48,7 @@ func openAIFileSchema(extraRequired []string, extraProps map[string]any) map[str
 	}
 }
 
-const attachmentIntro = "Takes a file your runtime already holds — an image you just generated, or a file from the conversation — as a real file argument. Select the file as `file`; do not build the object by hand, do not paste a path, and never base64-encode anything. The runtime supplies a temporary download URL and this server fetches the bytes itself, so nothing about the file is paid for as tokens. This is the right tool whenever the file exists on your side."
+var attachmentIntro = fmt.Sprintf("Takes a file the runtime holds, such as a generated image or a conversation file. `file` is resolved by the runtime (openai/fileParams); the server downloads it from download_url, up to %s. Paths and base64 are not supported.", maxDecodedSize)
 
 const attachmentFilenameDesc = "Optional name for the file in Anytype. Defaults to the name the runtime supplies. Keep a real extension: Anytype derives the file type from it."
 
@@ -56,7 +56,7 @@ func (s *mcpServer) attachmentToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name":        "file-upload-attachment",
-			"description": attachmentIntro + " Uploads it into Anytype as a file object and returns the object id, which is what icons ({\"format\":\"file\",\"file\":\"<id>\"}), object-set-cover and file properties take. Nothing is left staged.",
+			"description": attachmentIntro + " Uploads it as an Anytype file object and returns the object id, usable for icons ({\"format\":\"file\",\"file\":\"<id>\"}), object-set-cover and file properties. No staged copy is kept.",
 			"inputSchema": openAIFileSchema([]string{"space_id"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"filename": strProp(attachmentFilenameDesc),
@@ -66,7 +66,7 @@ func (s *mcpServer) attachmentToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "object-set-cover-from-attachment",
-			"description": attachmentIntro + " Uploads it and sets it as an object's cover in one step. NO block is added to the page, no property is touched, and the body stays as it was. The downloaded bytes are checked to actually be an image before anything is uploaded.",
+			"description": attachmentIntro + " Uploads it and sets it as the object's cover. Adds no block and changes no property or body. Content that is not an image is rejected before upload.",
 			"inputSchema": openAIFileSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Object that should get the cover."),
@@ -76,9 +76,9 @@ func (s *mcpServer) attachmentToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "file-stage-attachment",
-			"description": attachmentIntro + fmt.Sprintf(" Writes it into the input directory %q instead of uploading, so that every tool taking a staged_path can use it — file-upload, block-file-create, object-import, object-set-cover-from-file. This is the way to put a generated image into a page as a block. Returns the relative_path to pass on. There is no size limit worth worrying about: the content never passes through the conversation.", s.cfg.inRoot),
+			"description": attachmentIntro + fmt.Sprintf(" Writes it into the input directory %q instead of uploading, for the staged_path tools (file-upload, block-file-create, object-import, object-set-cover-from-file); this is how a generated image becomes a page block. Returns relative_path.", s.cfg.inRoot),
 			"inputSchema": openAIFileSchema(nil, map[string]any{
-				"filename":  strProp(attachmentFilenameDesc),
+				"filename":  strProp("Optional filename in the input directory. Defaults to the name the runtime supplies. Keep a real extension: Anytype derives the file type from it."),
 				"overwrite": map[string]any{"type": "boolean", "description": "Replace an existing file of that name. Without this, an existing name is an error.", "default": false},
 			}),
 			"_meta": openAIFileToolMeta(),

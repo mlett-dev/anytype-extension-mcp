@@ -173,10 +173,11 @@ allowed and must not be rewritten. Downloads land in `ANYTYPE_FILES_OUT_ROOT`.
 
 **Files the calling runtime holds.** `file-stage-attachment` and
 `file-upload-attachment` take a real file argument, and the server fetches the
-bytes itself from a temporary URL the runtime supplies. Nothing about the file
-is paid for as tokens, and there is no practical size limit.
+bytes itself from a temporary URL the runtime supplies. The model does not
+write the file bytes into its tool arguments. This upload route is currently
+limited to 24 MiB per file.
 
-There is no base64 route. It was removed rather than deprecated: encoding a
+There is no tool input that accepts base64. It was removed rather than deprecated: encoding a
 2 MB image into tool arguments costs roughly 700 000 tokens, and a tool that
 does not exist cannot be chosen.
 
