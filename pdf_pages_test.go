@@ -147,8 +147,12 @@ func TestFileExportPDFPages(t *testing.T) {
 	if pdfPages(t, data) != 1 || !bytes.Contains(data, []byte("(Page 3)")) {
 		t.Fatal("small page of a large PDF was not exported")
 	}
-	if tooBig := call(map[string]any{"object_id": "scan.pdf", "pages": "2"}); tooBig["isError"] != true {
-		t.Fatal("a selection larger than the export limit was accepted")
+	// An extract over the limit must point to a smaller selection, not to the
+	// dead end of "larger-file transfers are not implemented".
+	tooBig := call(map[string]any{"object_id": "scan.pdf", "pages": "2"})
+	encoded, _ = json.Marshal(tooBig)
+	if tooBig["isError"] != true || !bytes.Contains(encoded, []byte("select fewer of them")) || !bytes.Contains(encoded, []byte("has 3 pages")) || bytes.Contains(encoded, []byte("not implemented")) {
+		t.Fatalf("oversized extract not explained: %s", encoded)
 	}
 
 	for args, want := range map[string]map[string]any{

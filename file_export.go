@@ -286,7 +286,12 @@ func (s *mcpServer) exportFile(client *anytypefiles.Client, req exportRequest) (
 	if source.pageCount, err = extractPDFPages(root, rel, extractName, req.pages); err != nil {
 		return nativeToolResult{}, err
 	}
-	return s.createFileExport(req.objectID, filename, staging, filepath.Join(staging, extractName), time.Now(), source)
+	result, err := s.createFileExport(req.objectID, filename, staging, filepath.Join(staging, extractName), time.Now(), source)
+	var tooLarge *exportTooLargeError
+	if errors.As(err, &tooLarge) {
+		return nativeToolResult{}, fmt.Errorf("pages %s make a PDF of %d bytes, above the 6 MiB (%d bytes) export limit. This PDF has %d pages; select fewer of them", source.pages, tooLarge.size, maxExportBytes, source.pageCount)
+	}
+	return result, err
 }
 
 // reusePageExport finds a live export of the same pages of the same source
