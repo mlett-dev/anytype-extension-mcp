@@ -14,8 +14,9 @@ import urllib.parse
 from harness import Client, IN_ROOT
 
 
-def page_pdf(pages):
-    """A valid PDF whose page N shows "(Page N)"."""
+def page_pdf(pages, textless=(), body=""):
+    """A valid PDF whose page N shows "(Page N)" plus body; pages in textless
+    carry only a drawing, like a scan without a text layer."""
     out = bytearray(b"%PDF-1.7\n")
     offsets = []
 
@@ -29,7 +30,7 @@ def page_pdf(pages):
     obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
     for n in range(1, pages + 1):
         obj(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * (n - 1)} 0 R >>")
-        content = f"BT /F1 24 Tf 72 700 Td (Page {n}) Tj ET\n"
+        content = "0 0 1 rg 72 72 400 600 re f\n" if n in textless else f"BT /F1 24 Tf 72 700 Td (Page {n}{body}) Tj ET\n"
         obj(f"<< /Length {len(content)} >>\nstream\n{content}endstream")
     xref = len(out)
     out.extend(f"xref\n0 {len(offsets) + 1}\n0000000000 65535 f \n".encode())
@@ -56,6 +57,7 @@ def run(s):
         "LIVETEST limit.bin": os.urandom(limit),
         "LIVETEST oversized.bin": os.urandom(limit + 1),
         "LIVETEST pages.pdf": page_pdf(5),
+        "LIVETEST inspect.pdf": page_pdf(5, textless={3}, body=": the quick brown fox jumps over the lazy dog"),
     }
     try:
         for name, expected in fixtures.items():
@@ -119,6 +121,25 @@ def run(s):
             s.check("pdf pages: repeated page export returns the same link", again.get("uri") == meta["uri"], again)
         beyond = s.c.rpc("tools/call", {"name": "file-export", "arguments": {"object_id": objects["LIVETEST pages.pdf"], "pages": "5-6"}}).get("result", {})
         s.check("pdf pages: pages beyond the end are refused with the page count", beyond.get("isError") is True and "has 5 pages" in json.dumps(beyond), beyond)
+
+        # pdf-inspect: PDFium runs as WebAssembly inside the scratch image,
+        # which only a live run can show.
+        inspect_id = objects["LIVETEST inspect.pdf"]
+
+        def inspect(**args):
+            return s.c.rpc("tools/call", {"name": "pdf-inspect", "arguments": {"object_id": inspect_id, **args}}).get("result", {})
+
+        result = inspect()
+        meta = result.get("structuredContent") or {}
+        layer = meta.get("text_layer") or {}
+        s.check("pdf-inspect: overview with text layer as ranges", result.get("isError") is False and meta.get("page_count") == 5 and layer.get("with_text") == "1-2,4-5" and layer.get("without_text") == "3", result)
+        meta = inspect(pages="2-3", text=True).get("structuredContent") or {}
+        details = meta.get("pages") or [{}, {}]
+        s.check("pdf-inspect: text of a page, note on a page without text", details[0].get("text", "").startswith("Page 2:") and details[1].get("note") is not None, meta)
+        search = (inspect(query="page 4").get("structuredContent") or {}).get("search") or {}
+        s.check("pdf-inspect: search names matches and unsearchable pages", search.get("pages_with_matches") == "4" and search.get("match_count") == 1 and search.get("not_searchable") == "3", search)
+        beyond = inspect(pages="6")
+        s.check("pdf-inspect: pages beyond the end are refused", beyond.get("isError") is True and "has 5 pages" in json.dumps(beyond), beyond)
 
         # One call, several files: an oversized item fails alone and the links
         # come back in item order, each readable from another connection.

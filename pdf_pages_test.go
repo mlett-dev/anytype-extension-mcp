@@ -18,6 +18,18 @@ import (
 // testPDF builds a valid PDF whose page N shows "(Page N)". padding adds a
 // comment of that many bytes to the content stream of page paddedPage.
 func testPDF(pages, paddedPage, padding int) []byte {
+	return buildTestPDF(pages, func(n int) string {
+		content := fmt.Sprintf("BT /F1 24 Tf 72 700 Td (Page %d) Tj ET\n", n)
+		if n == paddedPage {
+			content += "%" + strings.Repeat("x", padding) + "\n"
+		}
+		return content
+	})
+}
+
+// buildTestPDF builds a valid PDF from one content stream per page; F1 is
+// Helvetica. A page without BT/ET has no text layer, like a scan.
+func buildTestPDF(pages int, content func(page int) string) []byte {
 	var buf bytes.Buffer
 	var offsets []int
 	object := func(body string) {
@@ -34,11 +46,8 @@ func testPDF(pages, paddedPage, padding int) []byte {
 	object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
 	for i := 1; i <= pages; i++ {
 		object(fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>", 5+2*(i-1)))
-		content := fmt.Sprintf("BT /F1 24 Tf 72 700 Td (Page %d) Tj ET\n", i)
-		if i == paddedPage {
-			content += "%" + strings.Repeat("x", padding) + "\n"
-		}
-		object(fmt.Sprintf("<< /Length %d >>\nstream\n%sendstream", len(content), content))
+		stream := content(i)
+		object(fmt.Sprintf("<< /Length %d >>\nstream\n%sendstream", len(stream), stream))
 	}
 	xref := buf.Len()
 	fmt.Fprintf(&buf, "xref\n0 %d\n0000000000 65535 f \n", len(offsets)+1)

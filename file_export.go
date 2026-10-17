@@ -217,45 +217,75 @@ func (s *mcpServer) toolExportMany(args map[string]any) (nativeToolResult, error
 	}, nil
 }
 
-func (s *mcpServer) exportFile(client *anytypefiles.Client, req exportRequest) (nativeToolResult, error) {
-	// Download into a unique shared directory, rather than renaming or deleting
-	// an existing file-download output. Heart may run as a different user.
+// stagedFile is an Anytype file downloaded into a private staging directory
+// inside the output root, opened as a root so nothing reads past it.
+type stagedFile struct {
+	dir  string
+	root *os.Root
+	rel  string // the download, relative to dir
+	name string // the file name Anytype gave it
+}
+
+func (f *stagedFile) path() string { return filepath.Join(f.dir, f.rel) }
+
+func (f *stagedFile) Close() {
+	f.root.Close()
+	os.RemoveAll(f.dir)
+}
+
+// stageAnytypeFile downloads into a unique shared directory, rather than
+// renaming or deleting an existing file-download output. Heart may run as a
+// different user, hence the open permissions on the directory.
+func (s *mcpServer) stageAnytypeFile(client *anytypefiles.Client, objectID string) (_ *stagedFile, err error) {
 	outRoot, err := ensureDir(s.cfg.outRoot)
 	if err != nil {
-		return nativeToolResult{}, err
+		return nil, err
 	}
 	staging, err := os.MkdirTemp(outRoot, ".mcp-export-download-")
 	if err != nil {
-		return nativeToolResult{}, err
+		return nil, err
 	}
-	defer os.RemoveAll(staging)
+	defer func() {
+		if err != nil {
+			os.RemoveAll(staging)
+		}
+	}()
 	if err := os.Chmod(staging, 0755); err != nil {
-		return nativeToolResult{}, err
+		return nil, err
 	}
 	serverStaging, err := mapHostPathToServerPath(outRoot, s.cfg.serverOutRoot, staging)
 	if err != nil {
-		return nativeToolResult{}, err
+		return nil, err
 	}
-	download, err := downloadAnytypeFileWith(client, req.objectID, staging, serverStaging)
+	download, err := downloadAnytypeFileWith(client, objectID, staging, serverStaging)
 	if err != nil {
-		return nativeToolResult{}, err
+		return nil, err
 	}
 	rel, err := filepath.Rel(staging, download.localPath)
 	if err != nil {
-		return nativeToolResult{}, err
+		return nil, err
 	}
 	root, err := os.OpenRoot(staging)
 	if err != nil {
+		return nil, err
+	}
+	return &stagedFile{dir: staging, root: root, rel: rel, name: filepath.Base(download.localPath)}, nil
+}
+
+func (s *mcpServer) exportFile(client *anytypefiles.Client, req exportRequest) (nativeToolResult, error) {
+	staged, err := s.stageAnytypeFile(client, req.objectID)
+	if err != nil {
 		return nativeToolResult{}, err
 	}
-	defer root.Close()
+	defer staged.Close()
+	staging, root, rel := staged.dir, staged.root, staged.rel
 
 	if req.pages == nil {
 		filename := req.filename
 		if filename == "" {
-			filename = filepath.Base(download.localPath)
+			filename = staged.name
 		}
-		result, err := s.createFileExport(req.objectID, filename, staging, download.localPath, time.Now(), nil)
+		result, err := s.createFileExport(req.objectID, filename, staging, staged.path(), time.Now(), nil)
 		var tooLarge *exportTooLargeError
 		if errors.As(err, &tooLarge) {
 			if count, ok := pdfPageCount(root, rel); ok {
@@ -270,7 +300,7 @@ func (s *mcpServer) exportFile(client *anytypefiles.Client, req exportRequest) (
 	}
 	filename := req.filename
 	if filename == "" {
-		filename = pagesFilename(filepath.Base(download.localPath), req.pages)
+		filename = pagesFilename(staged.name, req.pages)
 	}
 	sourceSum, err := fileSHA256(root, rel)
 	if err != nil {

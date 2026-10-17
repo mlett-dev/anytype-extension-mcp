@@ -52,7 +52,28 @@ subject to its license terms.
    Used by file-export to extract selected pages of a PDF. Compiled binaries
    statically link it.
 
-3. github.com/anyproto/anytype-cli
+3. github.com/klippa-app/go-pdfium
+   MIT License - Copyright (c) 2022 Klippa App BV
+   https://github.com/klippa-app/go-pdfium/blob/main/LICENSE
+
+   Used by pdf-inspect. It embeds PDFium compiled to WebAssembly
+   (pdfium.wasm). PDFium is licensed under the Apache License 2.0 and BSD
+   terms (Copyright The PDFium Authors, https://pdfium.googlesource.com/pdfium/)
+   and bundles further libraries, among them FreeType, libjpeg-turbo and
+   OpenJPEG, under their own licenses. Acknowledgments those licenses ask for:
+
+   Portions of this software are copyright (c) The FreeType Project
+   (www.freetype.org). All rights reserved.
+
+   This software is based in part on the work of the Independent JPEG Group.
+
+4. github.com/tetratelabs/wazero
+   Apache License 2.0 - Copyright The wazero Authors
+   https://github.com/tetratelabs/wazero/blob/main/LICENSE
+
+   The WebAssembly runtime that runs pdfium.wasm.
+
+5. github.com/anyproto/anytype-cli
    MIT License - Copyright (c) 2023 Any Association
    https://github.com/anyproto/anytype-cli/blob/main/LICENSE.md
 

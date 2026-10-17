@@ -1,6 +1,6 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 140 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 141 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
 
@@ -78,10 +78,10 @@ what the GUI can do.
 `object-version-show` `object-version-restore` `objects-modify-property`
 `template-create` `type-set-featured-properties`
 
-**Files (11)** — `file-info` `file-list-input` `file-list-output` `file-upload`
+**Files (12)** — `file-info` `file-list-input` `file-list-output` `file-upload`
 `file-download` `file-upload-many` `file-download-many`
 `file-stage-attachment` `file-upload-attachment` `file-export`
-`file-export-many`
+`file-export-many` `pdf-inspect`
 
 **Extras (10)** — `block-embed-create` `block-embed-set-text`
 `block-extract-to-object` `block-link-appearance` `block-relation-add`
@@ -279,6 +279,35 @@ lists: export links are returned on demand and are not a browsable catalog.
 Only valid, unexpired export URIs are readable; arbitrary server paths are not
 accepted. The existing `file-download` and `file-download-many` still return
 local paths and retain their existing behavior.
+
+## Tool: pdf-inspect
+
+`pdf-inspect` describes a PDF stored in Anytype without handing it over. Every
+answer starts with an overview whose size does not depend on the page count:
+`page_count`, `page_sizes` (pages grouped by size, with `width_mm`,
+`height_mm` and a paper `format` where one fits) and `text_layer`, which names
+the pages with and without a text layer as ranges, e.g.
+`"with_text": "1-35,40-412"`, plus their counts. A page counts as having a text
+layer from 20 non-space characters on. Ranges are capped at 20 per list and
+size groups at 10; `ranges_truncated` marks a cut, the counts stay complete.
+`size_bytes` and `fits_file_export` tell whether `file-export` can hand over
+the whole file.
+
+- `pages` (e.g. `"37-38"`) adds per-page details for up to 20 pages per call;
+  `text: true` adds their text layer, at most 20,000 characters per call. The
+  rest is named in `next_pages`.
+- `query` searches the text layer case-insensitively, within `pages` if given:
+  `match_count`, `pages_with_matches`, up to 20 snippets and `not_searchable`,
+  the pages without a text layer. The server reads text layers only; it does
+  no OCR.
+
+PDFium runs as WebAssembly (go-pdfium on wazero), so the scratch image needs
+no C library. It starts on first use, which takes about 1.6 s, holds about
+300 MB while loaded and stops after 10 idle minutes. Reading a document is
+bounded by one minute; a session over that is killed, so a malformed PDF cannot
+block the server. The pages of the last four documents stay cached by content
+hash, so overview, text and search read a PDF once. Sources up to 256 MiB are
+accepted.
 
 ## Compact property updates
 

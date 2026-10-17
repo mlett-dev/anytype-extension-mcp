@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.33.1"
+	serverVersion = "0.34.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -254,6 +254,8 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, error) {
 		return s.toolExport(args)
 	case "file-export-many":
 		return s.toolExportMany(args)
+	case "pdf-inspect":
+		return s.toolPDFInspect(args)
 	case "file-info":
 		return s.toolInfo(args)
 	case "file-list-input":
@@ -932,7 +934,7 @@ func (s *mcpServer) extraToolDefs() []any {
 		s.coverToolDefs(),
 		s.usageToolDefs(), s.serverInfoToolDefs(),
 		s.debugToolDefs(), s.openAIFileToolDefs(), s.attachmentToolDefs(),
-		s.exportToolDefs(),
+		s.exportToolDefs(), s.pdfToolDefs(),
 	} {
 		defs = append(defs, group...)
 	}

@@ -5,9 +5,11 @@ go 1.26.5
 require (
 	github.com/anyproto/anytype-heart v0.50.8
 	github.com/gogo/protobuf v1.3.2
+	github.com/klippa-app/go-pdfium v1.21.3
 	github.com/pdfcpu/pdfcpu v0.16.2
+	github.com/tetratelabs/wazero v1.12.0
 	github.com/zalando/go-keyring v0.2.8
-	google.golang.org/grpc v1.83.1
+	google.golang.org/grpc v1.83.2
 )
 
 require (
@@ -27,6 +29,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hhrutter/tiff v1.0.7 // indirect
 	github.com/ipfs/go-cid v0.6.2 // indirect
+	github.com/jolestar/go-commons-pool/v2 v2.1.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
 	github.com/libp2p/go-libp2p v0.48.0 // indirect
@@ -56,7 +59,7 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/image v0.46.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
