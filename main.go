@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.34.0"
+	serverVersion = "0.35.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -256,6 +256,8 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, error) {
 		return s.toolExportMany(args)
 	case "pdf-inspect":
 		return s.toolPDFInspect(args)
+	case "pdf-render-pages":
+		return s.toolPDFRender(args)
 	case "file-info":
 		return s.toolInfo(args)
 	case "file-list-input":

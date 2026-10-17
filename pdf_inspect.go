@@ -52,7 +52,11 @@ const (
 var pdfReadDeadline = time.Minute
 
 func (s *mcpServer) pdfToolDefs() []any {
-	return []any{map[string]any{
+	return []any{pdfInspectToolDef(), pdfRenderToolDef()}
+}
+
+func pdfInspectToolDef() map[string]any {
+	return map[string]any{
 		"name": "pdf-inspect",
 		"description": fmt.Sprintf("Inspect a PDF stored in Anytype without transferring it: page count, page sizes and which pages have a text layer, given as page ranges. "+
 			"With pages, per-page details for up to %d pages per call; with text, also their text layer (at most %d characters per call, the rest is named in next_pages). "+
@@ -64,7 +68,7 @@ func (s *mcpServer) pdfToolDefs() []any {
 			"text":      map[string]any{"type": "boolean", "default": false, "description": "With pages: include the text layer of those pages."},
 			"query":     map[string]any{"type": "string", "minLength": 1, "maxLength": maxQueryLen, "description": "Text to search for in the text layer."},
 		}),
-	}}
+	}
 }
 
 type pdfPage struct {
@@ -542,9 +546,10 @@ func describePDFiumError(err error) error {
 var pdfEngine pdfiumEngine
 
 type pdfiumEngine struct {
-	mu   sync.Mutex
-	pool pdfium.Pool
-	idle *time.Timer
+	mu       sync.Mutex
+	pool     pdfium.Pool
+	idle     *time.Timer
+	sessions atomic.Int64 // how often with ran; tests check what was avoided
 }
 
 // with runs fn on an instance. A session that outlives deadline is killed
@@ -553,6 +558,7 @@ type pdfiumEngine struct {
 func (e *pdfiumEngine) with(deadline time.Duration, fn func(pdfium.Pdfium) error) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.sessions.Add(1)
 	if e.idle != nil {
 		e.idle.Stop()
 	}

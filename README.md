@@ -1,6 +1,6 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 141 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 142 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
 
@@ -78,10 +78,10 @@ what the GUI can do.
 `object-version-show` `object-version-restore` `objects-modify-property`
 `template-create` `type-set-featured-properties`
 
-**Files (12)** — `file-info` `file-list-input` `file-list-output` `file-upload`
+**Files (13)** — `file-info` `file-list-input` `file-list-output` `file-upload`
 `file-download` `file-upload-many` `file-download-many`
 `file-stage-attachment` `file-upload-attachment` `file-export`
-`file-export-many` `pdf-inspect`
+`file-export-many` `pdf-inspect` `pdf-render-pages`
 
 **Extras (10)** — `block-embed-create` `block-embed-set-text`
 `block-extract-to-object` `block-link-appearance` `block-relation-add`
@@ -308,6 +308,31 @@ bounded by one minute; a session over that is killed, so a malformed PDF cannot
 block the server. The pages of the last four documents stay cached by content
 hash, so overview, text and search read a PDF once. Sources up to 256 MiB are
 accepted.
+
+## Tool: pdf-render-pages
+
+`pdf-render-pages` renders pages of a PDF as images, one `resource_link` per
+page in page order: `format` `jpeg` (default) or `png`, `dpi` 50-300 (default
+150), up to 20 pages per call with the rest in `next_pages`. `include_text`
+adds each page's text layer under the same 20,000-character budget as
+`pdf-inspect`.
+
+**Size limit per image.** Every page is its own image, link and
+`resources/read`, so the 6 MiB export limit applies to each image separately.
+A call of 20 pages can therefore hand over far more than a PDF extract from
+`file-export` with `pages`, which has to fit all its pages into one 6 MiB file.
+The 6 MiB itself is unchanged: it is the budget for one message on the client
+connection, and a single image cannot exceed it either. A page whose image
+would be larger is rendered again at a DPI scaled to fit, down to 50 DPI;
+each result gives `dpi`, `width_px`, `height_px` and, when lowered,
+`dpi_reduced`. A page that does not fit even then fails alone, the others are
+still rendered. Images are capped at 40 megapixels. Twenty pages at the
+largest size come to 120 MiB of the 384 MiB export cache.
+
+Rendering the same page, format and DPI again returns the same link without
+starting PDFium, which matters because ChatGPT sends each tool call twice.
+Each page renders in its own PDFium session, bounded by 30 s. Measured on a
+Letter page: 15-170 ms per image at 150-300 DPI.
 
 ## Compact property updates
 

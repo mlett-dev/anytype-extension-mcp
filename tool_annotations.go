@@ -54,6 +54,7 @@ var toolAnnotations = map[string]toolHints{
 	"file-export":                      hintReadOnly, // only writes its own expiring cache
 	"file-export-many":                 hintReadOnly,
 	"pdf-inspect":                      hintReadOnly,
+	"pdf-render-pages":                 hintReadOnly, // only writes its own expiring cache
 	"file-upload-attachment":           openWorldTool(hintAdditive),
 	"file-stage-attachment":            openWorldTool(hintDestructive), // overwrite
 	"object-set-cover-from-attachment": openWorldTool(hintDestructive),

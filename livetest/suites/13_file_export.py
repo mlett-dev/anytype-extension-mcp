@@ -141,6 +141,38 @@ def run(s):
         beyond = inspect(pages="6")
         s.check("pdf-inspect: pages beyond the end are refused", beyond.get("isError") is True and "has 5 pages" in json.dumps(beyond), beyond)
 
+        # pdf-render-pages: the WebAssembly JPEG encoder and PNG path in the
+        # scratch image, checked by the image header and pixel size.
+        def image_size(data):
+            if data[:8] == b"\x89PNG\r\n\x1a\n":
+                return "png", int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+            i = 2
+            while data[:2] == b"\xff\xd8" and i < len(data) - 9:
+                marker, length = data[i + 1], int.from_bytes(data[i + 2:i + 4], "big")
+                if marker in (0xC0, 0xC1, 0xC2):
+                    return "jpeg", int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+                i += 2 + length
+            return None, 0, 0
+
+        rendered = s.c.rpc("tools/call", {"name": "pdf-render-pages", "arguments": {"object_id": inspect_id, "pages": "2-3", "include_text": True}}).get("result", {})
+        links = [c for c in rendered.get("content", []) if c.get("type") == "resource_link"]
+        results = (rendered.get("structuredContent") or {}).get("results") or [{}, {}]
+        s.check("pdf-render-pages: two pages, two links, text and note", len(links) == 2 and results[0].get("text", "").startswith("Page 2:") and results[1].get("note") is not None, rendered)
+        png_result = s.c.rpc("tools/call", {"name": "pdf-render-pages", "arguments": {"object_id": inspect_id, "pages": "1", "format": "png", "dpi": 100}}).get("result", {})
+        links += [c for c in png_result.get("content", []) if c.get("type") == "resource_link"]
+        handles.extend(urllib.parse.urlparse(l["uri"]).netloc for l in links)
+        reader = Client()
+        try:
+            sizes = []
+            for link in links:
+                content = reader.rpc("resources/read", {"uri": link["uri"]}).get("result", {}).get("contents", [])
+                sizes.append(image_size(base64.b64decode(content[0]["blob"], validate=True)) if content else (None, 0, 0))
+            # Letter: 150 DPI is 1275x1650, 100 DPI 850x1100; PDFium rounds the height up.
+            s.check("pdf-render-pages: JPEG at 150 DPI and PNG at 100 DPI decode at the right size",
+                    [(f, w, h in (want - 0, want + 1)) for (f, w, h), want in zip(sizes, (1650, 1650, 1100))] == [("jpeg", 1275, True), ("jpeg", 1275, True), ("png", 850, True)], sizes)
+        finally:
+            reader.close()
+
         # One call, several files: an oversized item fails alone and the links
         # come back in item order, each readable from another connection.
         many_names = ["LIVETEST export.png", "LIVETEST oversized.bin", "LIVETEST export.pdf"]

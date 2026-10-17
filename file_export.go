@@ -47,10 +47,16 @@ type exportManifest struct {
 	SHA256    string    `json:"sha256"`
 	ExpiresAt time.Time `json:"expires_at"`
 
-	// Set for page exports only; see pageSource.
+	// Set for page exports and page renders only; see pageSource.
 	SourceSHA256    string `json:"source_sha256,omitempty"`
 	Pages           string `json:"pages,omitempty"`
 	SourcePageCount int    `json:"source_page_count,omitempty"`
+
+	// Set for page renders only: the requested format@dpi, and what came out.
+	Render      string `json:"render,omitempty"`
+	WidthPx     int    `json:"width_px,omitempty"`
+	HeightPx    int    `json:"height_px,omitempty"`
+	RenderedDPI int    `json:"dpi,omitempty"`
 }
 
 // pageSource marks an export as pages extracted from a PDF. pdfcpu does not
@@ -61,6 +67,9 @@ type pageSource struct {
 	sha256    string
 	pages     string
 	pageCount int
+
+	render                 string // format@dpi as requested; empty for a PDF extract
+	width, height, dpiUsed int
 }
 
 // answers reports whether this snapshot is what the request asks for.
@@ -69,7 +78,7 @@ func (m exportManifest) answers(objectID, name, sum string, size int64, source *
 		return false
 	}
 	if source != nil {
-		return m.SourceSHA256 == source.sha256 && m.Pages == source.pages
+		return m.SourceSHA256 == source.sha256 && m.Pages == source.pages && m.Render == source.render
 	}
 	return m.Pages == "" && m.SHA256 == sum && m.SizeBytes == size
 }
@@ -451,6 +460,7 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 	}
 	if source != nil {
 		manifest.SourceSHA256, manifest.Pages, manifest.SourcePageCount = source.sha256, source.pages, source.pageCount
+		manifest.Render, manifest.WidthPx, manifest.HeightPx, manifest.RenderedDPI = source.render, source.width, source.height, source.dpiUsed
 	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
@@ -475,6 +485,9 @@ func exportResult(handle string, manifest exportManifest) nativeToolResult {
 	}
 	if manifest.Pages != "" {
 		metadata["pages"], metadata["source_page_count"] = manifest.Pages, manifest.SourcePageCount
+	}
+	if manifest.Render != "" {
+		metadata["width_px"], metadata["height_px"], metadata["dpi"] = manifest.WidthPx, manifest.HeightPx, manifest.RenderedDPI
 	}
 	return nativeToolResult{
 		Metadata: metadata,
