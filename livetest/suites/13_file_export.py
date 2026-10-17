@@ -14,6 +14,31 @@ import urllib.parse
 from harness import Client, IN_ROOT
 
 
+def page_pdf(pages):
+    """A valid PDF whose page N shows "(Page N)"."""
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+
+    def obj(body):
+        offsets.append(len(out))
+        out.extend(f"{len(offsets)} 0 obj\n{body}\nendobj\n".encode())
+
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(pages))
+    obj("<< /Type /Catalog /Pages 2 0 R >>")
+    obj(f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>")
+    obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for n in range(1, pages + 1):
+        obj(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * (n - 1)} 0 R >>")
+        content = f"BT /F1 24 Tf 72 700 Td (Page {n}) Tj ET\n"
+        obj(f"<< /Length {len(content)} >>\nstream\n{content}endstream")
+    xref = len(out)
+    out.extend(f"xref\n0 {len(offsets) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets:
+        out.extend(f"{offset:010d} 00000 n \n".encode())
+    out.extend(f"trailer\n<< /Size {len(offsets) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    return bytes(out)
+
+
 def run(s):
     limit = 6 * 1024 * 1024
     staging = pathlib.Path(IN_ROOT) / "livetest-file-export"
@@ -30,6 +55,7 @@ def run(s):
         "LIVETEST export.pdf": b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n",
         "LIVETEST limit.bin": os.urandom(limit),
         "LIVETEST oversized.bin": os.urandom(limit + 1),
+        "LIVETEST pages.pdf": page_pdf(5),
     }
     try:
         for name, expected in fixtures.items():
@@ -73,6 +99,26 @@ def run(s):
                 downloaded = s.c.call("file-download", object_id=object_id, target_name="livetest-file-export-download.png")
                 downloads.append("out/livetest-file-export-download.png")
                 s.check("existing file-download still returns a local path", downloaded.get("local_path", "").endswith("livetest-file-export-download.png"), downloaded)
+
+        # PDF pages: pdfcpu runs inside the scratch image, which has no config
+        # directory, so only a live run shows that extraction works there.
+        pages_args = {"object_id": objects["LIVETEST pages.pdf"], "pages": "4, 1-2"}
+        result = s.c.rpc("tools/call", {"name": "file-export", "arguments": pages_args}).get("result", {})
+        meta = result.get("structuredContent") or {}
+        s.check("pdf pages: export succeeded with normalised selection", result.get("isError") is False and meta.get("pages") == "1-2,4" and meta.get("source_page_count") == 5, result)
+        if meta.get("uri"):
+            handles.append(urllib.parse.urlparse(meta["uri"]).netloc)
+            reader = Client()
+            try:
+                content = reader.rpc("resources/read", {"uri": meta["uri"]}).get("result", {}).get("contents", [])
+                data = base64.b64decode(content[0]["blob"], validate=True) if content else b""
+                s.check("pdf pages: extract holds the selected pages only", data.startswith(b"%PDF") and b"(Page 4)" in data and b"(Page 1)" in data and b"(Page 3)" not in data and hashlib.sha256(data).hexdigest() == meta["sha256"])
+            finally:
+                reader.close()
+            again = s.c.rpc("tools/call", {"name": "file-export", "arguments": pages_args}).get("result", {}).get("structuredContent") or {}
+            s.check("pdf pages: repeated page export returns the same link", again.get("uri") == meta["uri"], again)
+        beyond = s.c.rpc("tools/call", {"name": "file-export", "arguments": {"object_id": objects["LIVETEST pages.pdf"], "pages": "5-6"}}).get("result", {})
+        s.check("pdf pages: pages beyond the end are refused with the page count", beyond.get("isError") is True and "has 5 pages" in json.dumps(beyond), beyond)
 
         # One call, several files: an oversized item fails alone and the links
         # come back in item order, each readable from another connection.

@@ -265,7 +265,7 @@ func TestFileExportExpiryIntegrityAndConfinement(t *testing.T) {
 	if err := os.WriteFile(source, []byte("expired bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	expired, err := server.createFileExport("fixture", "expired.bin", sourceRoot, source, time.Now().Add(-2*exportTTL))
+	expired, err := server.createFileExport("fixture", "expired.bin", sourceRoot, source, time.Now().Add(-2*exportTTL), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestFileExportExpiryIntegrityAndConfinement(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.createFileExport("fixture", "escaped.bin", sourceRoot, link, time.Now()); err == nil {
+	if _, err := server.createFileExport("fixture", "escaped.bin", sourceRoot, link, time.Now(), nil); err == nil {
 		t.Fatal("export followed a symlink outside its staging root")
 	}
 }
@@ -300,7 +300,7 @@ func writeExportSource(t *testing.T, data string) (string, string) {
 func exportHandle(t *testing.T, server *mcpServer, objectID, name, data string, now time.Time) string {
 	t.Helper()
 	root, path := writeExportSource(t, data)
-	result, err := server.createFileExport(objectID, name, root, path, now)
+	result, err := server.createFileExport(objectID, name, root, path, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func TestFileExportCacheBudget(t *testing.T) {
 	now := time.Now()
 	root, path := writeExportSource(t, "small image")
 	export := func(server *mcpServer) error {
-		_, err := server.createFileExport("object", "photo.jpg", root, path, now)
+		_, err := server.createFileExport("object", "photo.jpg", root, path, now, nil)
 		return err
 	}
 

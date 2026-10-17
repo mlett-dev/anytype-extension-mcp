@@ -213,7 +213,7 @@ func (s *mcpServer) toolDebugReceiveOpenAIFile(args map[string]any) (map[string]
 		return out, nil
 	}
 
-	data, status, err := fetchReference(downloadURL, s.cfg.timeout)
+	data, status, err := fetchReference(downloadURL, s.transferTimeout())
 	if err != nil {
 		out["reference_fetch"] = map[string]any{"attempted": true, "http_status": status, "error": err.Error()}
 		out["content_resolved"] = false
@@ -362,7 +362,7 @@ func (s *mcpServer) toolDebugReceiveFile(args map[string]any) (map[string]any, e
 	resolution := best.Detail
 
 	if len(data) == 0 && best.URI != "" && optionalBool(args, "fetch_reference", true) {
-		fetched, status, err := fetchReference(best.URI, s.cfg.timeout)
+		fetched, status, err := fetchReference(best.URI, s.transferTimeout())
 		if err != nil {
 			out["reference_fetch"] = map[string]any{"attempted": true, "error": err.Error()}
 			resolution = "reference could not be fetched: " + err.Error()

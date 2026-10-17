@@ -127,7 +127,7 @@ func (s *mcpServer) resolveAttachment(args map[string]any) (resolvedAttachment, 
 		return resolvedAttachment{}, fmt.Errorf("the file argument has no download_url, so there is nothing to fetch. A file_id alone cannot be resolved: MCP has no way for a server to ask a client for file content")
 	}
 
-	data, status, err := fetchReference(downloadURL, s.cfg.timeout)
+	data, status, err := fetchReference(downloadURL, s.transferTimeout())
 	if err != nil {
 		return resolvedAttachment{}, fmt.Errorf("could not download the file: %w. These URLs are short-lived, so a stale one is the first thing to suspect — select the file again", err)
 	}

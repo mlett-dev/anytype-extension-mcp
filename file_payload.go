@@ -32,16 +32,35 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
 
 // maxDecodedBytes caps how much content one call may bring in: the fetch in
 // fetchReference stops here rather than reading an unbounded body. It is the
-// documented upload limit of the *-attachment tools.
-const maxDecodedBytes = 24 << 20
+// documented upload limit of the *-attachment tools. The bytes come from the
+// download_url, not through the client connection, so no message size limits
+// them; the cap bounds memory and transfer time.
+const maxDecodedBytes = 100 << 20
+
+// defaultTransferTimeout bounds one fetch and the Anytype upload after it.
+const defaultTransferTimeout = 2 * time.Minute
 
 var maxDecodedSize = fmt.Sprintf("%d MiB (%d bytes)", maxDecodedBytes>>20, maxDecodedBytes)
+
+// transferContext carries the transfer deadline into an RPC; the client keeps
+// a deadline it is given instead of applying its own shorter timeout.
+func (s *mcpServer) transferContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), s.transferTimeout())
+}
+
+func (s *mcpServer) transferTimeout() time.Duration {
+	if s.cfg.transferTimeout > 0 {
+		return s.cfg.transferTimeout
+	}
+	return defaultTransferTimeout
+}
 
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -226,7 +245,9 @@ func (s *mcpServer) uploadPayload(spaceID, filename string, data []byte, typeVal
 	}
 	defer client.Close()
 
-	uploaded, err := client.UploadFile(context.Background(), anytypefiles.UploadRequest{
+	ctx, cancel := s.transferContext()
+	defer cancel()
+	uploaded, err := client.UploadFile(ctx, anytypefiles.UploadRequest{
 		SpaceID: spaceID, LocalPath: staged.serverPath, Type: fileType, Style: fileStyle,
 	})
 	if err != nil {
@@ -289,7 +310,9 @@ func (s *mcpServer) setCoverFromPayload(args map[string]any, filename string, da
 	if err != nil {
 		return nil, err
 	}
-	uploaded, err := client.UploadFile(context.Background(), anytypefiles.UploadRequest{
+	ctx, cancel := s.transferContext()
+	defer cancel()
+	uploaded, err := client.UploadFile(ctx, anytypefiles.UploadRequest{
 		SpaceID: spaceID, LocalPath: staged.serverPath, Type: fileType, Style: fileStyle,
 	})
 	if err != nil {

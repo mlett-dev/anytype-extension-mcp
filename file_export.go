@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -45,12 +46,44 @@ type exportManifest struct {
 	SizeBytes int64     `json:"size_bytes"`
 	SHA256    string    `json:"sha256"`
 	ExpiresAt time.Time `json:"expires_at"`
+
+	// Set for page exports only; see pageSource.
+	SourceSHA256    string `json:"source_sha256,omitempty"`
+	Pages           string `json:"pages,omitempty"`
+	SourcePageCount int    `json:"source_page_count,omitempty"`
+}
+
+// pageSource marks an export as pages extracted from a PDF. pdfcpu does not
+// write the same bytes twice (object numbering and /ID vary between runs), so
+// a repeated page export is recognised by its source and selection instead of
+// its own hash.
+type pageSource struct {
+	sha256    string
+	pages     string
+	pageCount int
+}
+
+// answers reports whether this snapshot is what the request asks for.
+func (m exportManifest) answers(objectID, name, sum string, size int64, source *pageSource) bool {
+	if m.ObjectID != objectID || m.Filename != name {
+		return false
+	}
+	if source != nil {
+		return m.SourceSHA256 == source.sha256 && m.Pages == source.pages
+	}
+	return m.Pages == "" && m.SHA256 == sum && m.SizeBytes == size
+}
+
+func reusableExport(cache *os.Root, export cachedExport, objectID, name, sum string, size int64, source *pageSource, now time.Time) bool {
+	m := export.manifest
+	return m.answers(objectID, name, sum, size, source) && m.ExpiresAt.Sub(now) >= minExportReuseLifetime && exportDataIntact(cache, export.handle, m)
 }
 
 func exportItemProperties() map[string]any {
 	return map[string]any{
 		"object_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 1024, "description": "Anytype file object ID."},
 		"filename":  map[string]any{"type": "string", "minLength": 1, "maxLength": 255, "description": "Optional download filename, without directories. Changes the name only, not the bytes."},
+		"pages":     map[string]any{"type": "string", "minLength": 1, "maxLength": maxPagesSpecLen, "description": "PDF only: pages to export, e.g. \"1-5,9\". The export is then a new PDF with just these pages, in document order, instead of the original bytes."},
 	}
 }
 
@@ -58,7 +91,7 @@ func (s *mcpServer) exportToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name":        "file-export",
-			"description": "Hand an Anytype file to the MCP client as a downloadable resource. Returns a native resource_link; the client retrieves the bytes through resources/read. Works for any file type up to 6 MiB (6291456 bytes), unchanged. The link expires 15 minutes after it was created; exporting the same unchanged file again returns the existing link. Use this to return files to ChatGPT; file-download only writes paths on the server. Files above the limit are refused; no preview, compression or truncation is performed.",
+			"description": "Hand an Anytype file to the MCP client as a downloadable resource. Returns a native resource_link; the client retrieves the bytes through resources/read. Works for any file type up to 6 MiB (6291456 bytes), unchanged. The link expires 15 minutes after it was created; exporting the same unchanged file again returns the existing link. Use this to return files to ChatGPT; file-download only writes paths on the server. Files above the limit are refused, a PDF with its page count; pages exports selected pages of a PDF as a new PDF. Nothing is compressed or truncated.",
 			"inputSchema": restSchema([]string{"object_id"}, exportItemProperties()),
 		},
 		map[string]any{
@@ -74,30 +107,50 @@ func (s *mcpServer) exportToolDefs() []any {
 	}
 }
 
-func parseExportArgs(args map[string]any) (objectID, filename string, err error) {
+type exportRequest struct {
+	objectID string
+	filename string
+	pages    []pageRange // nil exports the original bytes
+}
+
+// parseExportArgs checks everything that can be checked before a download;
+// whether pages exist in the PDF is known only afterwards.
+func parseExportArgs(args map[string]any) (exportRequest, error) {
 	for key := range args {
-		if key != "object_id" && key != "filename" {
-			return "", "", fmt.Errorf("unknown argument: %s", key)
+		if key != "object_id" && key != "filename" && key != "pages" {
+			return exportRequest{}, fmt.Errorf("unknown argument: %s", key)
 		}
 	}
 	objectID, ok := args["object_id"].(string)
 	objectID = strings.TrimSpace(objectID)
 	if !ok || objectID == "" || len(objectID) > 1024 {
-		return "", "", errors.New("object_id must be a non-empty string of at most 1024 bytes")
+		return exportRequest{}, errors.New("object_id must be a non-empty string of at most 1024 bytes")
 	}
+	req := exportRequest{objectID: objectID}
 	if value, present := args["filename"]; present {
-		if filename, ok = value.(string); !ok {
-			return "", "", errors.New("filename must be a string")
+		if req.filename, ok = value.(string); !ok {
+			return exportRequest{}, errors.New("filename must be a string")
 		}
-		if err := validateExportFilename(filename); err != nil {
-			return "", "", err
+		if err := validateExportFilename(req.filename); err != nil {
+			return exportRequest{}, err
 		}
 	}
-	return objectID, filename, nil
+	if value, present := args["pages"]; present {
+		spec, ok := value.(string)
+		if !ok {
+			return exportRequest{}, errors.New("pages must be a string such as \"1-5,9\"")
+		}
+		pages, err := parsePageSelection(spec)
+		if err != nil {
+			return exportRequest{}, err
+		}
+		req.pages = pages
+	}
+	return req, nil
 }
 
 func (s *mcpServer) toolExport(args map[string]any) (nativeToolResult, error) {
-	objectID, filename, err := parseExportArgs(args)
+	req, err := parseExportArgs(args)
 	if err != nil {
 		return nativeToolResult{}, err
 	}
@@ -106,7 +159,7 @@ func (s *mcpServer) toolExport(args map[string]any) (nativeToolResult, error) {
 		return nativeToolResult{}, err
 	}
 	defer client.Close()
-	return s.exportFile(client, objectID, filename)
+	return s.exportFile(client, req)
 }
 
 // toolExportMany validates every item before exporting any, so a malformed
@@ -124,14 +177,13 @@ func (s *mcpServer) toolExportMany(args map[string]any) (nativeToolResult, error
 	if len(items) == 0 || len(items) > maxExportManyItems {
 		return nativeToolResult{}, fmt.Errorf("items must hold 1 to %d files", maxExportManyItems)
 	}
-	type exportItem struct{ objectID, filename string }
-	parsed := make([]exportItem, len(items))
+	parsed := make([]exportRequest, len(items))
 	for i, item := range items {
-		objectID, filename, err := parseExportArgs(item)
+		req, err := parseExportArgs(item)
 		if err != nil {
 			return nativeToolResult{}, fmt.Errorf("items[%d]: %w", i, err)
 		}
-		parsed[i] = exportItem{objectID, filename}
+		parsed[i] = req
 	}
 	client, err := s.grpcClient()
 	if err != nil {
@@ -143,7 +195,7 @@ func (s *mcpServer) toolExportMany(args map[string]any) (nativeToolResult, error
 	var links []map[string]any
 	var failures []string
 	for i, item := range parsed {
-		exported, err := s.exportFile(client, item.objectID, item.filename)
+		exported, err := s.exportFile(client, item)
 		if err != nil {
 			results = append(results, map[string]any{"index": i, "object_id": item.objectID, "error": err.Error()})
 			failures = append(failures, fmt.Sprintf("items[%d]: %v", i, err))
@@ -165,7 +217,7 @@ func (s *mcpServer) toolExportMany(args map[string]any) (nativeToolResult, error
 	}, nil
 }
 
-func (s *mcpServer) exportFile(client *anytypefiles.Client, objectID, filename string) (nativeToolResult, error) {
+func (s *mcpServer) exportFile(client *anytypefiles.Client, req exportRequest) (nativeToolResult, error) {
 	// Download into a unique shared directory, rather than renaming or deleting
 	// an existing file-download output. Heart may run as a different user.
 	outRoot, err := ensureDir(s.cfg.outRoot)
@@ -184,14 +236,90 @@ func (s *mcpServer) exportFile(client *anytypefiles.Client, objectID, filename s
 	if err != nil {
 		return nativeToolResult{}, err
 	}
-	download, err := downloadAnytypeFileWith(client, objectID, staging, serverStaging)
+	download, err := downloadAnytypeFileWith(client, req.objectID, staging, serverStaging)
 	if err != nil {
 		return nativeToolResult{}, err
 	}
-	if filename == "" {
-		filename = filepath.Base(download.localPath)
+	rel, err := filepath.Rel(staging, download.localPath)
+	if err != nil {
+		return nativeToolResult{}, err
 	}
-	return s.createFileExport(objectID, filename, staging, download.localPath, time.Now())
+	root, err := os.OpenRoot(staging)
+	if err != nil {
+		return nativeToolResult{}, err
+	}
+	defer root.Close()
+
+	if req.pages == nil {
+		filename := req.filename
+		if filename == "" {
+			filename = filepath.Base(download.localPath)
+		}
+		result, err := s.createFileExport(req.objectID, filename, staging, download.localPath, time.Now(), nil)
+		var tooLarge *exportTooLargeError
+		if errors.As(err, &tooLarge) {
+			if count, ok := pdfPageCount(root, rel); ok {
+				tooLarge.pdfPages = count
+			}
+		}
+		return result, err
+	}
+
+	if !isPDF(root, rel) {
+		return nativeToolResult{}, errors.New("pages works only for PDF files, and this file is not a PDF")
+	}
+	filename := req.filename
+	if filename == "" {
+		filename = pagesFilename(filepath.Base(download.localPath), req.pages)
+	}
+	sourceSum, err := fileSHA256(root, rel)
+	if err != nil {
+		return nativeToolResult{}, err
+	}
+	source := &pageSource{sha256: sourceSum, pages: formatPageSelection(req.pages)}
+	if result, ok := s.reusePageExport(req.objectID, filename, source, time.Now()); ok {
+		return result, nil
+	}
+	// The extract lands next to the download, in the same private staging
+	// directory, and is exported through the same confined path.
+	const extractName = ".pages.pdf"
+	if source.pageCount, err = extractPDFPages(root, rel, extractName, req.pages); err != nil {
+		return nativeToolResult{}, err
+	}
+	return s.createFileExport(req.objectID, filename, staging, filepath.Join(staging, extractName), time.Now(), source)
+}
+
+// reusePageExport finds a live export of the same pages of the same source
+// before the PDF is parsed again.
+func (s *mcpServer) reusePageExport(objectID, name string, source *pageSource, now time.Time) (nativeToolResult, bool) {
+	cache, err := s.openExportCache()
+	if err != nil {
+		return nativeToolResult{}, false
+	}
+	defer cache.Close()
+	active, err := cleanupFileExports(cache, now)
+	if err != nil {
+		return nativeToolResult{}, false
+	}
+	for _, export := range active {
+		if reusableExport(cache, export, objectID, name, "", 0, source, now) {
+			return exportResult(export.handle, export.manifest), true
+		}
+	}
+	return nativeToolResult{}, false
+}
+
+func fileSHA256(root *os.Root, rel string) (string, error) {
+	file, err := root.Open(rel)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func validateExportFilename(name string) error {
@@ -207,7 +335,7 @@ func validateExportFilename(name string) error {
 // createFileExport reads at most 6 MiB + 1 byte through a confined file handle.
 // The snapshot and manifest survive process/container restarts on the shared
 // output volume. No in-memory registration is required by resources/read.
-func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath string, now time.Time) (nativeToolResult, error) {
+func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath string, now time.Time, source *pageSource) (nativeToolResult, error) {
 	if err := validateExportFilename(name); err != nil {
 		return nativeToolResult{}, err
 	}
@@ -257,8 +385,7 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 	var nextExpiry time.Time
 	for _, export := range active {
 		m := export.manifest
-		if m.ObjectID == objectID && m.Filename == name && m.SHA256 == sum && m.SizeBytes == int64(len(data)) &&
-			m.ExpiresAt.Sub(now) >= minExportReuseLifetime && exportDataIntact(cache, export.handle, m) {
+		if reusableExport(cache, export, objectID, name, sum, int64(len(data)), source, now) {
 			return exportResult(export.handle, m), nil
 		}
 		used += m.SizeBytes
@@ -287,6 +414,9 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 		ObjectID: objectID, Filename: name, MIMEType: sniffMIME(name, data),
 		SizeBytes: int64(len(data)), SHA256: sum, ExpiresAt: now.UTC().Add(exportTTL),
 	}
+	if source != nil {
+		manifest.SourceSHA256, manifest.Pages, manifest.SourcePageCount = source.sha256, source.pages, source.pageCount
+	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		return nativeToolResult{}, err
@@ -303,13 +433,17 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 
 func exportResult(handle string, manifest exportManifest) nativeToolResult {
 	uri := (&url.URL{Scheme: "anytype-export", Host: handle, Path: "/" + manifest.Filename}).String()
+	metadata := map[string]any{
+		"object_id": manifest.ObjectID, "uri": uri, "filename": manifest.Filename, "mime_type": manifest.MIMEType,
+		"size_bytes": manifest.SizeBytes, "sha256": manifest.SHA256,
+		"expires_at": manifest.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	if manifest.Pages != "" {
+		metadata["pages"], metadata["source_page_count"] = manifest.Pages, manifest.SourcePageCount
+	}
 	return nativeToolResult{
-		Metadata: map[string]any{
-			"object_id": manifest.ObjectID, "uri": uri, "filename": manifest.Filename, "mime_type": manifest.MIMEType,
-			"size_bytes": manifest.SizeBytes, "sha256": manifest.SHA256,
-			"expires_at": manifest.ExpiresAt.UTC().Format(time.RFC3339),
-		},
-		Content: []map[string]any{{"type": "resource_link", "uri": uri, "name": manifest.Filename, "mimeType": manifest.MIMEType, "size": manifest.SizeBytes}},
+		Metadata: metadata,
+		Content:  []map[string]any{{"type": "resource_link", "uri": uri, "name": manifest.Filename, "mimeType": manifest.MIMEType, "size": manifest.SizeBytes}},
 	}
 }
 
@@ -328,8 +462,23 @@ func exportCacheFullError(count int, used int64, nextExpiry, now time.Time) erro
 	return errors.New(msg)
 }
 
+// exportTooLargeError names the PDF page count when it is known, so the
+// caller can export the file in page ranges instead.
+type exportTooLargeError struct {
+	size     int64
+	pdfPages int
+}
+
+func (e *exportTooLargeError) Error() string {
+	msg := fmt.Sprintf("file is %d bytes; file-export supports at most 6 MiB (%d bytes). The original was not exported or modified", e.size, maxExportBytes)
+	if e.pdfPages > 0 {
+		return msg + fmt.Sprintf(". This PDF has %d pages; pass pages, e.g. \"1-10\", to export a part of it", e.pdfPages)
+	}
+	return msg + "; larger-file transfers are not implemented"
+}
+
 func exportSizeError(size int64) error {
-	return fmt.Errorf("file is %d bytes; file-export supports at most 6 MiB (%d bytes). The original was not exported or modified; previews and larger-file transfers are not implemented", size, maxExportBytes)
+	return &exportTooLargeError{size: size}
 }
 
 func (s *mcpServer) openExportCache() (*os.Root, error) {

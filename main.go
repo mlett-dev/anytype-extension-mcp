@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.32.0"
+	serverVersion = "0.33.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -51,18 +51,19 @@ type rpcResponse struct {
 }
 
 type serverConfig struct {
-	grpcAddr      string
-	token         string
-	timeout       time.Duration
-	apiBaseURL    string
-	apiKey        string
-	apiVersion    string
-	inRoot        string
-	outRoot       string
-	serverInRoot  string
-	serverOutRoot string
-	leanToolset   bool
-	unsplashKey   string
+	grpcAddr        string
+	token           string
+	timeout         time.Duration
+	transferTimeout time.Duration // fetching a download_url and the Anytype upload after it
+	apiBaseURL      string
+	apiKey          string
+	apiVersion      string
+	inRoot          string
+	outRoot         string
+	serverInRoot    string
+	serverOutRoot   string
+	leanToolset     bool
+	unsplashKey     string
 }
 
 type messageFraming int
@@ -86,18 +87,19 @@ type mcpServer struct {
 
 func main() {
 	cfg := serverConfig{
-		grpcAddr:      getEnv("ANYTYPE_GRPC_ADDR", anytypefiles.DefaultGRPCAddress),
-		token:         strings.TrimSpace(os.Getenv("ANYTYPE_SESSION_TOKEN")),
-		timeout:       parseDurationEnv("ANYTYPE_TIMEOUT", anytypefiles.DefaultTimeout),
-		apiBaseURL:    getEnv("ANYTYPE_API_BASE_URL", "http://127.0.0.1:31012"),
-		apiKey:        strings.TrimSpace(os.Getenv("ANYTYPE_API_KEY")),
-		apiVersion:    getEnv("ANYTYPE_API_VERSION", "2025-11-08"),
-		inRoot:        getEnv("ANYTYPE_FILES_IN_ROOT", "/data/in"),
-		outRoot:       getEnv("ANYTYPE_FILES_OUT_ROOT", "/data/out"),
-		serverInRoot:  getEnv("ANYTYPE_FILES_SERVER_IN_ROOT", "/data/in"),
-		serverOutRoot: getEnv("ANYTYPE_FILES_SERVER_OUT_ROOT", "/data/out"),
-		leanToolset:   strings.EqualFold(getEnv("ANYTYPE_MCP_TOOLSET", "full"), "lean"),
-		unsplashKey:   strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
+		grpcAddr:        getEnv("ANYTYPE_GRPC_ADDR", anytypefiles.DefaultGRPCAddress),
+		token:           strings.TrimSpace(os.Getenv("ANYTYPE_SESSION_TOKEN")),
+		timeout:         parseDurationEnv("ANYTYPE_TIMEOUT", anytypefiles.DefaultTimeout),
+		transferTimeout: parseDurationEnv("ANYTYPE_TRANSFER_TIMEOUT", defaultTransferTimeout),
+		apiBaseURL:      getEnv("ANYTYPE_API_BASE_URL", "http://127.0.0.1:31012"),
+		apiKey:          strings.TrimSpace(os.Getenv("ANYTYPE_API_KEY")),
+		apiVersion:      getEnv("ANYTYPE_API_VERSION", "2025-11-08"),
+		inRoot:          getEnv("ANYTYPE_FILES_IN_ROOT", "/data/in"),
+		outRoot:         getEnv("ANYTYPE_FILES_OUT_ROOT", "/data/out"),
+		serverInRoot:    getEnv("ANYTYPE_FILES_SERVER_IN_ROOT", "/data/in"),
+		serverOutRoot:   getEnv("ANYTYPE_FILES_SERVER_OUT_ROOT", "/data/out"),
+		leanToolset:     strings.EqualFold(getEnv("ANYTYPE_MCP_TOOLSET", "full"), "lean"),
+		unsplashKey:     strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
 	}
 
 	srv := &mcpServer{cfg: cfg}

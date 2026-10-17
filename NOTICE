@@ -45,7 +45,14 @@ subject to its license terms.
    under the Any Source Available License 1.0 and cannot be redistributed
    under MIT.
 
-2. github.com/anyproto/anytype-cli
+2. github.com/pdfcpu/pdfcpu
+   Apache License 2.0 - Copyright The pdfcpu Authors
+   https://github.com/pdfcpu/pdfcpu/blob/master/LICENSE.txt
+
+   Used by file-export to extract selected pages of a PDF. Compiled binaries
+   statically link it.
+
+3. github.com/anyproto/anytype-cli
    MIT License - Copyright (c) 2023 Any Association
    https://github.com/anyproto/anytype-cli/blob/main/LICENSE.md
 

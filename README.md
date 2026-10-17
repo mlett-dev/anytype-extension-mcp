@@ -136,6 +136,8 @@ the call and apply to every returned object — not inside `items`.
 - `ANYTYPE_GRPC_ADDR` (default: `dns:///127.0.0.1:31010`)
 - `ANYTYPE_SESSION_TOKEN` — token for the gRPC tools
 - `ANYTYPE_TIMEOUT` (default: `30s`)
+- `ANYTYPE_TRANSFER_TIMEOUT` (default: `2m`): fetching an attachment's
+  download URL and uploading it to Anytype
 - `ANYTYPE_API_BASE_URL` (default: `http://127.0.0.1:31012`)
 - `ANYTYPE_API_KEY` — required for the REST tools
 - `ANYTYPE_API_VERSION` (default: `2025-11-08`)
@@ -175,8 +177,9 @@ allowed and must not be rewritten. Downloads land in `ANYTYPE_FILES_OUT_ROOT`.
 **Files the calling runtime holds.** `file-stage-attachment` and
 `file-upload-attachment` take a real file argument, and the server fetches the
 bytes itself from a temporary URL the runtime supplies. The model does not
-write the file bytes into its tool arguments. This upload route is currently
-limited to 24 MiB per file.
+write the file bytes into its tool arguments. This upload route is limited to
+100 MiB per file; the fetch and the Anytype upload after it share
+`ANYTYPE_TRANSFER_TIMEOUT`.
 
 There is no tool input that accepts base64. It was removed rather than deprecated: encoding a
 2 MB image into tool arguments costs roughly 700 000 tokens, and a tool that
@@ -229,6 +232,18 @@ Call `file-export` with an Anytype file `object_id` and optionally a plain
 inclusive. The original bytes are preserved; larger files fail without
 truncation or conversion. `file-preview` and larger-file transfer are not yet
 implemented.
+
+**PDF pages.** For a PDF, `pages` (e.g. `"1-5,9"`) exports a new PDF with only
+those pages, in document order, named like `Report (pages 1-5,9).pdf` unless
+`filename` is given. Only page numbers and `N-M` ranges are accepted; the
+selection is sorted and merged. The source may be up to 256 MiB, and the
+extract must still fit 6 MiB. The result carries `pages` and
+`source_page_count`, and its bytes are a new file, not the original. A PDF that
+is too large as a whole is refused with its page count, so the caller can
+choose ranges. Pages are extracted with pdfcpu, which writes different bytes on
+every run, so a repeated page export is matched by the source's SHA-256 and the
+selection rather than by its own hash. `file-export-many` accepts `pages` per
+item.
 
 The result contains a native `content` block of type `resource_link` with an
 `anytype-export://<opaque-handle>/<filename>` URI, plus small metadata in text
