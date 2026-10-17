@@ -25,6 +25,14 @@ const iconPayloadDescription = "The object's icon. Three shapes are accepted: an
 
 const propertyLinkValueDescription = "Property updates must use the typed Anytype property-link shape. Every item needs key plus exactly one typed value field: text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects. Do not send {key, value:null}; Anytype cannot infer the value type from null. Use objects for relation/object links, files for file attachments, [] to clear object/file/multi-select links, and an empty string/false only for formats that accept that type."
 
+const searchFilesDescription = "Without types, file objects (types file, image, video, audio; PDFs are file) are searched too and listed after the other results. "
+
+var includeFilesProp = map[string]any{
+	"type":        "boolean",
+	"description": "Without types: also search file objects. Default true; false gives Anytype's plain search without them.",
+	"default":     true,
+}
+
 const compactOutputOptionsDescription = "Compact output options are response-shaping only. fields selects top-level object fields such as id, name, snippet, layout, archived, space_id, object, type, icon, properties, or markdown. property_keys selects entries inside the returned properties object. Do not put property names in fields, and do not put top-level fields in property_keys."
 
 const bulkCompactOptionsDescription = "For many tools, compact output options such as fields, property_keys, include_properties, include_type, include_icon, and max_properties belong at the top level of the tool call and apply to every returned object. Do not put these compact options inside items."
@@ -747,7 +755,7 @@ func (s *mcpServer) allToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "search-global-compact",
-			"description": "REST wrapper for Anytype global search with compact object results across accessible spaces. Use query for text search and types for object type keys. " + compactOutputOptionsDescription,
+			"description": "REST wrapper for Anytype global search with compact object results across accessible spaces. Use query for text search and types for object type keys. " + searchFilesDescription + compactOutputOptionsDescription,
 			"inputSchema": compactObjectToolSchema([]string{}, map[string]any{
 				"offset": map[string]any{
 					"type":        "integer",
@@ -773,11 +781,12 @@ func (s *mcpServer) allToolDefs() []any {
 					"description": "Object type keys to include.",
 					"items":       map[string]any{"type": "string"},
 				},
+				"include_files": includeFilesProp,
 			}),
 		},
 		map[string]any{
 			"name":        "search-space-compact",
-			"description": "REST wrapper for Anytype search within one space with compact object results. Use query for text search and types for object type keys. Prefer this over global search when space_id is known. " + compactOutputOptionsDescription,
+			"description": "REST wrapper for Anytype search within one space with compact object results. Use query for text search and types for object type keys. Prefer this over global search when space_id is known. " + searchFilesDescription + compactOutputOptionsDescription,
 			"inputSchema": compactObjectToolSchema([]string{"space_id"}, map[string]any{
 				"space_id": map[string]any{
 					"type":        "string",
@@ -807,6 +816,7 @@ func (s *mcpServer) allToolDefs() []any {
 					"description": "Object type keys to include.",
 					"items":       map[string]any{"type": "string"},
 				},
+				"include_files": includeFilesProp,
 			}),
 		},
 		map[string]any{

@@ -337,9 +337,13 @@ Do not put property names in `fields`, and do not put top-level fields such as
   `get-list-objects-compact` to fetch rows from that view.
 - `filters` on list/search tools are raw URL query parameters for the REST
   endpoint, not Notion-style or Anytype view filter definitions.
-- File objects appear in neither `list-objects-compact` nor full-text search.
-  Find them with `search-space-compact` and `types: ["image"]` or `["file"]`.
-  Note that Anytype names file objects **without** their extension.
+- Anytype's REST search leaves file objects out unless a file type is
+  requested. Without `types`, `search-space-compact` and
+  `search-global-compact` therefore run a second search over the file types
+  (`file`, `image`, `video`, `audio`; PDFs are `file`) and list those hits after
+  the other objects, with one pagination over both. `include_files: false`
+  restores the plain search. `list-objects-compact` still shows no file
+  objects. Note that Anytype names file objects **without** their extension.
 
 ## Partial updates
 

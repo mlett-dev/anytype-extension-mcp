@@ -502,7 +502,17 @@ func (s *mcpServer) toolSearchCompact(args map[string]any, requireSpace bool) (m
 		path = "/v1/spaces/" + url.PathEscape(spaceID) + "/search"
 	}
 
-	payload, err := s.anytypeAPIRequest(http.MethodPost, path, query, body)
+	// An empty list is how models often send "no filter"; it must not switch
+	// the file search off.
+	if types, ok := body["types"].([]any); ok && len(types) == 0 {
+		delete(body, "types")
+	}
+	var payload map[string]any
+	if _, typed := body["types"]; typed || !optionalBool(args, "include_files", true) {
+		payload, err = s.anytypeAPIRequest(http.MethodPost, path, query, body)
+	} else {
+		payload, err = s.searchObjectsThenFiles(path, offset, limit, body)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -514,6 +524,58 @@ func (s *mcpServer) toolSearchCompact(args map[string]any, requireSpace bool) (m
 		"api_base_url": s.cfg.apiBaseURL,
 		"api_version":  s.cfg.apiVersion,
 	}), nil
+}
+
+// fileTypeKeys are the types whose objects Anytype's search leaves out unless
+// one of them is requested (PDFs are of type file).
+var fileTypeKeys = []string{"file", "image", "video", "audio"}
+
+// searchObjectsThenFiles searches without a type filter the way the GUI does:
+// Anytype's REST search excludes file objects unless a file type is
+// requested, so an image searched by its name is not found. A second search
+// over fileTypeKeys continues the page after the other objects, and the
+// pagination covers both.
+func (s *mcpServer) searchObjectsThenFiles(path string, offset, limit int, body map[string]any) (map[string]any, error) {
+	search := func(offset, limit int, types []string) ([]any, int, error) {
+		query := url.Values{}
+		query.Set("offset", strconv.Itoa(offset))
+		query.Set("limit", strconv.Itoa(limit))
+		request := map[string]any{}
+		for key, value := range body {
+			request[key] = value
+		}
+		if types != nil {
+			request["types"] = types
+		}
+		payload, err := s.anytypeAPIRequest(http.MethodPost, path, query, request)
+		if err != nil {
+			return nil, 0, err
+		}
+		data, _ := payload["data"].([]any)
+		pagination, _ := payload["pagination"].(map[string]any)
+		total, _ := pagination["total"].(float64)
+		return data, int(total), nil
+	}
+	objects, objectTotal, err := search(offset, limit, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Asked for even when the page is full, for the total.
+	remaining := limit - len(objects)
+	files, fileTotal, err := search(max(0, offset-objectTotal), max(remaining, 1), fileTypeKeys)
+	if err != nil {
+		return nil, err
+	}
+	files = files[:min(len(files), max(remaining, 0))]
+	merged := append(objects, files...)
+	total := objectTotal + fileTotal
+	return map[string]any{
+		"data": merged,
+		"pagination": map[string]any{
+			"total": total, "offset": offset, "limit": limit,
+			"has_more": offset+len(merged) < total,
+		},
+	}, nil
 }
 
 func (s *mcpServer) toolSpaceObjectsCompact(args map[string]any) (map[string]any, error) {
