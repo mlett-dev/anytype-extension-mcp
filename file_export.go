@@ -347,6 +347,7 @@ func (s *mcpServer) reusePageExport(objectID, name string, source *pageSource, n
 	}
 	for _, export := range active {
 		if reusableExport(cache, export, objectID, name, "", 0, source, now) {
+			s.note("reused", "export")
 			return exportResult(export.handle, export.manifest), true
 		}
 	}
@@ -430,6 +431,7 @@ func (s *mcpServer) createFileExport(objectID, name, sourceRoot, sourcePath stri
 	for _, export := range active {
 		m := export.manifest
 		if reusableExport(cache, export, objectID, name, sum, int64(len(data)), source, now) {
+			s.note("reused", "export")
 			return exportResult(export.handle, m), nil
 		}
 		used += m.SizeBytes

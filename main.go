@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.37.0"
+	serverVersion = "0.38.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -97,6 +97,12 @@ type mcpServer struct {
 	// call does not start the browser a second time. Same single-message loop,
 	// so no lock.
 	renders []renderMemo
+
+	// callLog is nil unless ANYTYPE_CALL_LOG_DIR is set. notes collects what
+	// a tool adds to its log line (a reused export, the renderer's time) and
+	// is reset for every message.
+	callLog *callLog
+	notes   map[string]any
 }
 
 func main() {
@@ -118,6 +124,8 @@ func main() {
 	}
 
 	srv := &mcpServer{cfg: cfg}
+	logDays, _ := strconv.Atoi(getEnv("ANYTYPE_CALL_LOG_DAYS", "0"))
+	srv.callLog = newCallLog(strings.TrimSpace(os.Getenv("ANYTYPE_CALL_LOG_DIR")), strings.TrimSpace(os.Getenv("AEM_CONSUMER")), logDays, time.Now())
 	if err := srv.run(os.Stdin, os.Stdout); err != nil && !errors.Is(err, io.EOF) {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", serverName, err)
 		os.Exit(1)
@@ -134,28 +142,42 @@ func (s *mcpServer) run(stdin io.Reader, stdout io.Writer) error {
 			return err
 		}
 
+		start := time.Now()
+		s.notes = nil
 		var req rpcRequest
 		if err := json.Unmarshal(body, &req); err != nil {
-			if err := writeResponse(writer, framing, rpcResponse{
+			resp := rpcResponse{
 				JSONRPC: "2.0",
 				Error: &rpcError{
 					Code:    -32700,
 					Message: "parse error: invalid JSON",
 				},
-			}); err != nil {
+			}
+			size, err := writeResponse(writer, framing, resp)
+			s.callLog.record(rpcRequest{Method: "(unparsable)"}, resp, true, size, start, nil)
+			if err != nil {
 				return err
 			}
 			continue
 		}
 
 		resp, send := s.handleRequest(req)
-		if !send {
-			continue
+		size := 0
+		if send {
+			if size, err = writeResponse(writer, framing, resp); err != nil {
+				return err
+			}
 		}
-		if err := writeResponse(writer, framing, resp); err != nil {
-			return err
-		}
+		s.callLog.record(req, resp, send, size, start, s.notes)
 	}
+}
+
+// note adds a field to the call log line of the message being handled.
+func (s *mcpServer) note(key string, value any) {
+	if s.notes == nil {
+		s.notes = map[string]any{}
+	}
+	s.notes[key] = value
 }
 
 func (s *mcpServer) handleRequest(req rpcRequest) (rpcResponse, bool) {
@@ -228,7 +250,7 @@ func (s *mcpServer) handleRequest(req rpcRequest) (rpcResponse, bool) {
 			return rpcResponse{
 				JSONRPC: "2.0",
 				ID:      req.ID,
-				Result:  toolResult(map[string]any{"error": err.Error()}, true),
+				Result:  toolResult(map[string]any{"error": explainError(err.Error())}, true),
 			}, true
 		}
 		return rpcResponse{
@@ -1215,28 +1237,46 @@ func readNonEmptyLine(r *bufio.Reader) (string, error) {
 	}
 }
 
-func writeResponse(w *bufio.Writer, framing messageFraming, response rpcResponse) error {
+// writeResponse sends one response and returns the size of its JSON body.
+func writeResponse(w *bufio.Writer, framing messageFraming, response rpcResponse) (int, error) {
 	data, err := json.Marshal(response)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	if framing == messageFramingLine {
 		if _, err := w.Write(data); err != nil {
-			return err
+			return 0, err
 		}
 		if err := w.WriteByte('\n'); err != nil {
-			return err
+			return 0, err
 		}
 	} else {
 		if _, err := fmt.Fprintf(w, "Content-Length: %d\r\n\r\n", len(data)); err != nil {
-			return err
+			return 0, err
 		}
 		if _, err := w.Write(data); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return w.Flush()
+	return len(data), w.Flush()
+}
+
+// heartErrorHints put a plain statement in front of heart's wording for
+// failures any tool can run into, so a model need not guess what "tree does
+// not exist" means. heart's text stays behind it for diagnosis.
+var heartErrorHints = []struct{ marker, hint string }{
+	{"tree does not exist", "object not found in this space (wrong object_id, or it is in another space)"},
+	{"space not exists", "space not found (wrong space_id, or this account is not a member)"},
+}
+
+func explainError(msg string) string {
+	for _, h := range heartErrorHints {
+		if strings.Contains(msg, h.marker) {
+			return h.hint + ": " + msg
+		}
+	}
+	return msg
 }
 
 func (s *mcpServer) errorResponse(id *json.RawMessage, code int, message string) rpcResponse {

@@ -76,11 +76,13 @@ func renderReply() map[string]any {
 	return map[string]any{
 		"image": base64.StdEncoding.EncodeToString([]byte("\xff\xd8\xff\xe0 fake jpeg")),
 		"mime":  "image/jpeg", "width": 1280, "height": 900, "theme": "light",
+		"complete": true, "unsettled": []any{}, "ms": 2400,
 		"renderer": map[string]any{"frontend": "v0.56.1", "middleware": "0.50.18"},
 		"layout": map[string]any{
-			"layout": "edit", "content_width_px": 704, "height_px": 900, "blocks_in_dom": 12,
+			"layout": "edit", "content_width_px": 704, "content_height_px": 850, "blocks_in_dom": 12,
 			"tables":         []any{map[string]any{"block_id": "t1", "column_widths_px": []any{120, 360, 90}, "cells_wrapped": 1}},
-			"clipped_blocks": []any{}, "images_failed": 0,
+			"dataviews":      []any{},
+			"clipped_blocks": []any{}, "images_failed": []any{}, "images_loading": []any{}, "toggles_not_open": []any{},
 		},
 		"rpc": map[string]any{"refused": []any{}},
 	}
@@ -115,13 +117,16 @@ func TestObjectRenderExportsImageAndReport(t *testing.T) {
 	if _, ok := layout["tables"]; !ok {
 		t.Errorf("layout lost its tables: %v", layout)
 	}
-	for _, empty := range []string{"clipped_blocks", "images_failed", "blocks_in_dom"} {
+	for _, empty := range []string{"clipped_blocks", "images_failed", "images_loading", "toggles_not_open", "dataviews", "blocks_in_dom"} {
 		if _, ok := layout[empty]; ok {
 			t.Errorf("layout keeps %s although it says nothing: %v", empty, layout)
 		}
 	}
 	if _, ok := res.Metadata["warnings"]; ok {
 		t.Errorf("warnings without a refused call: %v", res.Metadata["warnings"])
+	}
+	if _, ok := res.Metadata["complete"]; ok {
+		t.Errorf("complete is only reported when false: %v", res.Metadata)
 	}
 
 	// ChatGPT's repeat of the same call is answered without a second render.
@@ -187,5 +192,52 @@ func TestObjectRenderPassesDaemonErrors(t *testing.T) {
 		if _, err := server.toolObjectRender(bad); err == nil {
 			t.Errorf("%v accepted", bad)
 		}
+	}
+}
+
+func TestObjectRenderFlagsWhatIsMissing(t *testing.T) {
+	reply := renderReply()
+	reply["complete"] = false
+	reply["unsettled"] = []any{"images"}
+	reply["layout"].(map[string]any)["toggles_not_open"] = []any{"g"}
+	daemon, _, _ := fakeRenderer(t, http.StatusOK, reply)
+	server, _ := renderTestServer(t, daemon.URL)
+
+	res, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "expand_toggles": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Metadata["complete"] != false {
+		t.Errorf("complete = %v, want false", res.Metadata["complete"])
+	}
+	warnings := strings.Join(res.Metadata["warnings"].([]string), " | ")
+	for _, want := range []string{"still loading (images)", "1 of 1 toggles did not open"} {
+		if !strings.Contains(warnings, want) {
+			t.Errorf("warnings %q lack %q", warnings, want)
+		}
+	}
+
+	// Toggles not asked to open are no news.
+	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "theme": "dark"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(res.Metadata["warnings"].([]string), " "), "toggles") {
+		t.Errorf("toggle warning without expand_toggles: %v", res.Metadata["warnings"])
+	}
+}
+
+func TestObjectRenderOlderDaemonWithoutCompleteness(t *testing.T) {
+	reply := renderReply()
+	delete(reply, "complete")
+	delete(reply, "unsettled")
+	daemon, _, _ := fakeRenderer(t, http.StatusOK, reply)
+	server, _ := renderTestServer(t, daemon.URL)
+	res, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.Metadata["complete"]; ok {
+		t.Errorf("complete invented for a daemon that does not measure it: %v", res.Metadata)
 	}
 }

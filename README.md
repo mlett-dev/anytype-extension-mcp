@@ -148,11 +148,36 @@ the call and apply to every returned object — not inside `items`.
 - `ANYTYPE_MCP_TOOLSET` — `full` (default) or `lean`
 - `UNSPLASH_ACCESS_KEY` — enables `unsplash-search` / `unsplash-download`
 - `ANYTYPE_RENDER_URL` — API of a renderer daemon; enables `object-render`
+- `ANYTYPE_CALL_LOG_DIR` — directory for the call log (see below); unset, no
+  log is written. `ANYTYPE_CALL_LOG_DAYS` (default `30`) days are kept, and
+  `AEM_CONSUMER` is written into every line to name who started the server
 
 The Unsplash key is deliberately read by this server rather than passed to
 Anytype: anytype-heart authenticates with a Bearer header, which Unsplash
 rejects for access keys, so the server calls `api.unsplash.com` directly.
 Without a key the Unsplash tools report that none is configured.
+
+### Call log
+
+With `ANYTYPE_CALL_LOG_DIR` set, the server appends one JSON line per message
+to `calls-YYYY-MM-DD.jsonl` (UTC) in that directory: time, a random id per
+server process and a sequence number, the client from `initialize`, the
+method and tool, the argument *names*, a hash over the arguments, every
+`*_id` argument as a short hash, whether the tool writes, duration, result
+size, ok or the error message (Anytype ids in it hashed), hashes of the
+export links handed out and of the URIs read back, and notes such as a reused
+render or export. Argument values, texts and results are never written.
+
+Several server processes can share the directory: lines are appended whole,
+files are never renamed, days past the retention are deleted at start, and a
+day stops at 64 MiB after one marker line. A log that cannot be written
+switches itself off instead of failing a call.
+
+`scripts/calllog-report.py DIR [--days N] [--client TEXT] [--tool NAME]`
+summarises it: sessions per client, calls, failures, p50/p95 time and size per
+tool, calls repeated with the same arguments within 120 s (split into reads
+and writes), export links never read, the most frequent errors and the slowest
+calls.
 
 ### Session token
 
@@ -338,11 +363,27 @@ Letter page: 15-170 ms per image at 150-300 DPI.
 ## Tool: object-render
 
 `object-render` shows an object as the Anytype GUI does: a `resource_link` to a
-JPEG or PNG, plus a layout report measured in the rendered page — the layout
-(`edit`, `set`, …), the content width, and per table the rendered column widths,
-whether it is wider than the page (`cut_off`), and how many cells wrap or clip.
-The report is the more reliable channel: it states in numbers what the image
-shows, and it arrives even when a client does not fetch the link.
+JPEG or PNG, plus a layout report measured in the rendered page:
+
+- the layout (`edit`, `set`, `collection`, …), the content width and the
+  content height (`content_height_px`: where the last visible element ends);
+- per table block the rendered column widths, whether it is wider than the
+  page (`cut_off`), how many cells wrap, and which cells clip (row, column);
+- per query or collection view (`dataviews`, embedded or the object itself)
+  its kind and view type, the rows shown in the image and the rows in total,
+  and for a grid the columns with their widths, `cut_off`, and the cells whose
+  text is cut off (row and column name) — or, with "wrap content" on, how many
+  cells wrap;
+- text blocks cut off at the side, and images that failed or were still
+  loading, by block id.
+
+`complete: false` says the image stops above the end of the object (the first
+screen with `full_height: false`, or a page past the 16000 px limit, which
+also sets `truncated`). Warnings say when the picture was taken while
+network, fonts or images were still loading, and when `expand_toggles` left
+toggles closed. The report is the more reliable channel: it states in numbers
+what the image shows, and it arrives even when a client does not fetch the
+link.
 
 The rendering is not done here. This server forwards the request to a separate
 daemon at `ANYTYPE_RENDER_URL` —
@@ -360,7 +401,9 @@ daemon must guarantee, because it shares heart with every other client:
   afterwards, because heart keeps one event stream per token.
 
 Before calling the daemon the server reads the object once: a wrong id fails
-there, and a hash of the blocks lets a repeated identical call within 90 s
+there (as in every tool, heart's "tree does not exist" and "space not exists"
+come with a plain "object not found in this space" or "space not found" in
+front), and a hash of the blocks lets a repeated identical call within 90 s
 return the first result (ChatGPT sends calls twice) without ever answering an
 edited object with the old picture. `expand_toggles` opens every toggle and
 toggle heading; opening the object sets its last-opened date, nothing else is

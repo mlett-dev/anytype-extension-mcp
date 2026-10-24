@@ -17,6 +17,10 @@ def run(s):
     for i in range(6):
         s.c.call("block-create", space_id=s.space_id, object_id=obj, target_id=toggle,
                  position="inner", text=f"Zeile {i} im Toggle")
+    nested = s.c.call("block-create", space_id=s.space_id, object_id=obj, target_id=toggle,
+                      position="inner", style="toggle", text="Unterabschnitt")["block_id"]
+    s.c.call("block-create", space_id=s.space_id, object_id=obj, target_id=nested,
+             position="inner", text="im inneren Toggle")
     s.c.call("block-create", space_id=s.space_id, object_id=obj, kind="table", rows=2, columns=2)
     s.c.call("table-set-cells", space_id=s.space_id, object_id=obj, cells=[
         {"row": 0, "column": 0, "text": "kurz"},
@@ -43,6 +47,17 @@ def run(s):
     opened = s.c.call("object-render", space_id=s.space_id, object_id=obj, expand_toggles=True)
     s.check("open toggles make the render taller",
             opened.get("height_px", 0) > res.get("height_px", 0), (opened.get("height_px"), res.get("height_px")))
+    s.check("every toggle opened, the nested one too", "warnings" not in opened, opened.get("warnings"))
+    s.check("a full-height render holds the whole object",
+            "complete" not in opened and opened["layout"]["content_height_px"] <= opened["height_px"], opened)
+
+    long_page = s.page("render lang")
+    s.c.call("block-paste", space_id=s.space_id, object_id=long_page,
+             markdown="\n\n".join(f"Absatz {i}, damit die Seite länger als ein Bildschirm wird." for i in range(40)))
+    s.settle(2)
+    first = s.c.call("object-render", space_id=s.space_id, object_id=long_page, full_height=False, width=480)
+    s.check("the first screen of a long object says it is not all of it",
+            first.get("complete") is False and first["layout"]["content_height_px"] > first["height_px"], first)
 
     dark = s.c.call("object-render", space_id=s.space_id, object_id=obj, theme="dark", width=800, format="png")
     s.check("theme, width and format are applied",
@@ -50,3 +65,4 @@ def run(s):
 
     status, msg = s.c.try_call("object-render", space_id=s.space_id, object_id="kein-solches-objekt")
     s.check("an object that does not exist is an error, not an empty picture", status == "err", msg)
+    s.check("the error says plainly that the object is not there", "object not found in this space" in msg, msg)

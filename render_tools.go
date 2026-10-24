@@ -46,7 +46,8 @@ func (s *mcpServer) renderToolDefs() []any {
 	return []any{map[string]any{
 		"name": "object-render",
 		"description": "Render an object as the Anytype GUI shows it, with the real Anytype frontend: an image link plus a layout report " +
-			"(rendered table column widths, wrapped and clipped cells, text cut off at the side, images that failed to load). " +
+			"(table column widths, wrapped and clipped cells; per query or collection view its columns, cut-off cells and rows shown of the total; " +
+			"text cut off at the side, images that failed to load; complete:false when the image does not reach the end of the object). " +
 			"The report holds what the image shows in numbers; read it first. Opening the object sets its last-opened date, nothing else is written.",
 		"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 			"space_id":  spaceIDProp(),
@@ -69,7 +70,14 @@ type renderResponse struct {
 	Width     int    `json:"width"`
 	Height    int    `json:"height"`
 	Truncated bool   `json:"truncated"`
-	Theme     string `json:"theme"`
+	// Complete is false when the image stops above the end of the content;
+	// nil from a daemon that does not measure it.
+	Complete *bool `json:"complete"`
+	// Unsettled names what was still loading when the picture was taken:
+	// network, fonts, images.
+	Unsettled []string `json:"unsettled"`
+	Theme     string   `json:"theme"`
+	Ms        int      `json:"ms"`
 	Renderer  struct {
 		Frontend   string `json:"frontend"`
 		Middleware string `json:"middleware"`
@@ -122,6 +130,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%s", spaceID, objectID, width, theme, format, expand, fullHeight, fingerprint)
 	now := time.Now()
 	if memo, ok := s.recentRender(key, now); ok {
+		s.note("reused", "render")
 		return memo, nil
 	}
 
@@ -137,6 +146,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	if err != nil {
 		return nativeToolResult{}, err
 	}
+	s.note("render_ms", rendered.Ms)
 	image, err := base64.StdEncoding.DecodeString(rendered.Image)
 	if err != nil || len(image) == 0 {
 		return nativeToolResult{}, errors.New("the renderer returned no image")
@@ -168,9 +178,18 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	if rendered.Truncated {
 		out["truncated"] = true
 	}
+	if rendered.Complete != nil && !*rendered.Complete {
+		out["complete"] = false
+	}
 	var warnings []string
 	if len(rendered.RPC.Refused) > 0 {
 		warnings = append(warnings, "the renderer refused calls the page made, so parts may be missing: "+strings.Join(rendered.RPC.Refused, ", "))
+	}
+	if len(rendered.Unsettled) > 0 {
+		warnings = append(warnings, "captured while still loading ("+strings.Join(rendered.Unsettled, ", ")+"), so parts may be missing or not yet in place")
+	}
+	if closed, _ := rendered.Layout["toggles_not_open"].([]any); expand && len(closed) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d of %d toggles did not open, so their content is not in the image", len(closed), len(toggles)))
 	}
 	if len(warnings) > 0 {
 		out["warnings"] = warnings
