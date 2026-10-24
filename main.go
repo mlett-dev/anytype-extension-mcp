@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.36.0"
+	serverVersion = "0.37.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -72,6 +72,7 @@ type serverConfig struct {
 	serverOutRoot   string
 	leanToolset     bool
 	unsplashKey     string
+	renderURL       string // API of the anytype-render daemon; empty: object-render reports it is not set up
 }
 
 type messageFraming int
@@ -91,6 +92,11 @@ type mcpServer struct {
 	// the answer. The run loop handles one message at a time, so there is
 	// nothing here to race with.
 	lastRawParams json.RawMessage
+
+	// renders remembers recent object-render results, so ChatGPT's repeated
+	// call does not start the browser a second time. Same single-message loop,
+	// so no lock.
+	renders []renderMemo
 }
 
 func main() {
@@ -108,6 +114,7 @@ func main() {
 		serverOutRoot:   getEnv("ANYTYPE_FILES_SERVER_OUT_ROOT", "/data/out"),
 		leanToolset:     strings.EqualFold(getEnv("ANYTYPE_MCP_TOOLSET", "full"), "lean"),
 		unsplashKey:     strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
+		renderURL:       strings.TrimSpace(os.Getenv("ANYTYPE_RENDER_URL")),
 	}
 
 	srv := &mcpServer{cfg: cfg}
@@ -258,6 +265,8 @@ func (s *mcpServer) callTool(name string, args map[string]any) (any, error) {
 		return s.toolPDFInspect(args)
 	case "pdf-render-pages":
 		return s.toolPDFRender(args)
+	case "object-render":
+		return s.toolObjectRender(args)
 	case "file-info":
 		return s.toolInfo(args)
 	case "file-list-input":
@@ -936,7 +945,7 @@ func (s *mcpServer) extraToolDefs() []any {
 		s.coverToolDefs(),
 		s.usageToolDefs(), s.serverInfoToolDefs(),
 		s.debugToolDefs(), s.openAIFileToolDefs(), s.attachmentToolDefs(),
-		s.exportToolDefs(), s.pdfToolDefs(),
+		s.exportToolDefs(), s.pdfToolDefs(), s.renderToolDefs(),
 	} {
 		defs = append(defs, group...)
 	}

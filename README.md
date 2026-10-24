@@ -1,6 +1,6 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 143 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 144 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
 
@@ -78,10 +78,10 @@ what the GUI can do.
 `object-version-show` `object-version-restore` `objects-modify-property`
 `template-create` `type-set-featured-properties`
 
-**Files (13)** — `file-info` `file-list-input` `file-list-output` `file-upload`
+**Files (14)** — `file-info` `file-list-input` `file-list-output` `file-upload`
 `file-download` `file-upload-many` `file-download-many`
 `file-stage-attachment` `file-upload-attachment` `file-export`
-`file-export-many` `pdf-inspect` `pdf-render-pages`
+`file-export-many` `pdf-inspect` `pdf-render-pages` `object-render`
 
 **Extras (10)** — `block-embed-create` `block-embed-set-text`
 `block-extract-to-object` `block-link-appearance` `block-relation-add`
@@ -147,6 +147,7 @@ the call and apply to every returned object — not inside `items`.
   directories as seen by the Anytype server, when its mount path differs
 - `ANYTYPE_MCP_TOOLSET` — `full` (default) or `lean`
 - `UNSPLASH_ACCESS_KEY` — enables `unsplash-search` / `unsplash-download`
+- `ANYTYPE_RENDER_URL` — API of a renderer daemon; enables `object-render`
 
 The Unsplash key is deliberately read by this server rather than passed to
 Anytype: anytype-heart authenticates with a Bearer header, which Unsplash
@@ -333,6 +334,37 @@ Rendering the same page, format and DPI again returns the same link without
 starting PDFium, which matters because ChatGPT sends each tool call twice.
 Each page renders in its own PDFium session, bounded by 30 s. Measured on a
 Letter page: 15-170 ms per image at 150-300 DPI.
+
+## Tool: object-render
+
+`object-render` shows an object as the Anytype GUI does: a `resource_link` to a
+JPEG or PNG, plus a layout report measured in the rendered page — the layout
+(`edit`, `set`, …), the content width, and per table the rendered column widths,
+whether it is wider than the page (`cut_off`), and how many cells wrap or clip.
+The report is the more reliable channel: it states in numbers what the image
+shows, and it arrives even when a client does not fetch the link.
+
+The rendering is not done here. This server forwards the request to a separate
+daemon at `ANYTYPE_RENDER_URL` —
+[anytype-render](https://github.com/mlett-dev/anytype-render) — which runs the
+anytype-ts web build in a headless browser against the same anytype-heart and
+hands back the image and the report. Without that variable the tool says it is not set up. What the
+daemon must guarantee, because it shares heart with every other client:
+
+- the browser reaches heart only through the daemon, which lets through an
+  allowlist of reading calls and answers start-up calls with global effect
+  (initial parameters, file auto-download, device state) itself;
+- `AccountSelect` only for the account already running — another id makes
+  heart stop the running account;
+- its own session per render (`WalletCreateSession` with a token), closed
+  afterwards, because heart keeps one event stream per token.
+
+Before calling the daemon the server reads the object once: a wrong id fails
+there, and a hash of the blocks lets a repeated identical call within 90 s
+return the first result (ChatGPT sends calls twice) without ever answering an
+edited object with the old picture. `expand_toggles` opens every toggle and
+toggle heading; opening the object sets its last-opened date, nothing else is
+written.
 
 ## Compact property updates
 
