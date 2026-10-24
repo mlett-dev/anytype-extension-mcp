@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.35.0"
+	serverVersion = "0.36.0"
 	protoVersion  = "2025-11-25"
 )
 

@@ -143,15 +143,16 @@ var toolAnnotations = map[string]toolHints{
 	"block-export":            hintReadOnly,
 
 	// Tables.
-	"table-inspect":    hintReadOnly,
-	"table-set-cells":  hintDestructive,
-	"table-insert":     hintAdditive,
-	"table-delete":     hintDestructive,
-	"table-duplicate":  hintAdditive,
-	"table-move":       hintDestructive,
-	"table-row-header": hintDestructive,
-	"table-row-clear":  hintDestructive,
-	"table-sort":       hintDestructive,
+	"table-inspect":      hintReadOnly,
+	"table-set-cells":    hintDestructive,
+	"table-insert":       hintAdditive,
+	"table-delete":       hintDestructive,
+	"table-duplicate":    hintAdditive,
+	"table-move":         hintDestructive,
+	"table-row-header":   hintDestructive,
+	"table-row-clear":    hintDestructive,
+	"table-sort":         hintDestructive,
+	"table-column-width": hintDestructive,
 
 	// Objects: state, history, export/import, templates.
 	"object-set-archived":          hintDestructive,

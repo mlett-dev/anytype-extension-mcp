@@ -479,6 +479,34 @@ cells again when the object is closed.
 missing cells carry `"exists": false` and the ID they will receive on the next
 write.
 
+### Column widths are pixels, and only the GUI reads them
+
+A table column's width is the field `width` on its `table_column` block, in
+pixels. heart never interprets it: `normalizeLayoutRow` resets `width` only on
+page columns, and `ColumnDuplicate` copies the source block, so a duplicated
+column keeps its width while an inserted one has none.
+
+Everything else is anytype-ts (`src/ts/component/block/table.tsx`, constants in
+`src/json/size.ts` under `table`; identical in v0.56.1, v0.57.4 and `develop`,
+read 2026-10-24):
+
+- The GUI reads `fields?.width ?? 140`. `??` falls back only on null, so a
+  stored `0` is not "default": it goes through `checkWidth` and shows as 50 px.
+  `table-column-width` therefore resets by **removing** the field.
+- `checkWidth` clamps to 50–2000, snaps onto 400, 800, … 2000 when within
+  10 px, and floors. It runs on display and before the GUI's own write, so the
+  tool applies it on write too and reports a `snapped` entry when the stored
+  value differs from the requested one. A width read back is the width shown.
+- The GUI writes `{ width }` alone through `BlockListSetFields`, which replaces
+  all fields of the block. The tool merges the existing fields instead.
+
+Two different units now sit on column blocks: `width` in `block-list` is a page
+column's share of its row (0–1), `width_px` is a table column. They are named
+apart so neither can be passed to the other tool by mistake, and
+`block-column-width` refuses a table's own blocks before walking up. Without
+that, a table inside a page column would lead the walk to the page row, and
+three pixel values against three page columns would be stored as shares.
+
 ---
 
 ## Types and layout

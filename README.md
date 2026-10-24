@@ -1,6 +1,6 @@
 # anytype-extension-mcp
 
-An MCP STDIO server for Anytype with 142 tools: block-level editing, query and
+An MCP STDIO server for Anytype with 143 tools: block-level editing, query and
 view configuration, tables, import/export and file transfer over gRPC, plus the
 REST surface of the official Anytype API.
 
@@ -60,9 +60,9 @@ what the GUI can do.
 `query-order-set` `query-view-create` `query-view-update` `query-view-delete`
 `query-view-arrange` `object-to-query` `object-to-collection`
 
-**Tables (9)** — `table-insert` `table-inspect` `table-delete` `table-duplicate`
+**Tables (10)** — `table-insert` `table-inspect` `table-delete` `table-duplicate`
 `table-move` `table-set-cells` `table-row-clear` `table-row-header`
-`table-sort`
+`table-sort` `table-column-width`
 
 **Space operations (12)** — `block-embed-query` `block-export` `object-date`
 `object-flags` `object-delete-permanently` `object-version-diff`

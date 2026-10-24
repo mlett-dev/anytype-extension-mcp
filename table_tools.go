@@ -46,7 +46,7 @@ func (s *mcpServer) tableToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name":        "table-inspect",
-			"description": "Read a table's structure: its rows and columns with ids and indices, which row is a header, and the text of every cell. Call this before any other table tool — they all address rows and columns by the ids or indices reported here. The full row x column grid is always returned; cells carrying \"exists\": false have no block yet, which is normal for never-filled or emptied cells and is fixed by writing to them. table_block_id may be omitted when the object holds exactly one table.",
+			"description": "Read a table's structure: its rows and columns with ids and indices, which row is a header, each column's width_px (absent means the default of 140 px), and the text of every cell. Call this before any other table tool — they all address rows and columns by the ids or indices reported here. The full row x column grid is always returned; cells carrying \"exists\": false have no block yet, which is normal for never-filled or emptied cells and is fixed by writing to them. table_block_id may be omitted when the object holds exactly one table.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":       spaceIDProp(),
 				"object_id":      strProp("Object containing the table."),
@@ -155,6 +155,31 @@ func (s *mcpServer) tableToolDefs() []any {
 			}),
 		},
 		map[string]any{
+			"name":        "table-column-width",
+			"description": "Set the width of table columns in pixels, as dragging a column border does in the GUI. Page columns side by side are block-column-width instead. Columns not passed keep their width.",
+			"inputSchema": restSchema([]string{"space_id", "object_id", "columns"}, map[string]any{
+				"space_id":       spaceIDProp(),
+				"object_id":      strProp("Object containing the table."),
+				"table_block_id": strProp("Table block id. Omit if the object has exactly one table."),
+				"columns": map[string]any{
+					"type":        "array",
+					"description": "Columns to resize.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"column":    tableIndexProp("column"),
+							"column_id": strProp("Column block id, instead of column."),
+							"width_px": map[string]any{
+								"type":        "integer",
+								"description": fmt.Sprintf("Width in pixels, %d-%d. 0 goes back to the default of %d.", anytypefiles.TableColumnMinWidth, anytypefiles.TableColumnMaxWidth, anytypefiles.TableColumnDefaultWidth),
+							},
+						},
+						"required": []any{"width_px"},
+					},
+				},
+			}),
+		},
+		map[string]any{
 			"name":        "table-sort",
 			"description": "Sort the table's rows by the text in one column. Header rows are not sorted along. This reorders the stored rows; it is not a live view sort like query-sort-add.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
@@ -197,6 +222,9 @@ func (s *mcpServer) dispatchTableTool(name string, args map[string]any) (map[str
 		return res, err, true
 	case "table-sort":
 		res, err := s.toolTableSort(args)
+		return res, err, true
+	case "table-column-width":
+		res, err := s.toolTableColumnWidth(args)
 		return res, err, true
 	}
 	return nil, nil, false
@@ -253,7 +281,11 @@ func tableResult(spaceID, objectID string, info anytypefiles.TableInfo, extra ma
 	}
 	columns := make([]map[string]any, 0, len(info.Columns))
 	for _, c := range info.Columns {
-		columns = append(columns, map[string]any{"id": c.ID, "index": c.Index})
+		entry := map[string]any{"id": c.ID, "index": c.Index}
+		if c.WidthPx > 0 {
+			entry["width_px"] = c.WidthPx
+		}
+		columns = append(columns, entry)
 	}
 	cells := make([]map[string]any, 0, len(info.Cells))
 	for _, c := range info.Cells {
@@ -499,4 +531,46 @@ func (s *mcpServer) toolTableSort(args map[string]any) (map[string]any, error) {
 	return tableResult(spaceID, objectID, info, map[string]any{
 		"direction": direction, "sorted": true,
 	}), nil
+}
+
+func (s *mcpServer) toolTableColumnWidth(args map[string]any) (map[string]any, error) {
+	raw, ok := args["columns"]
+	if !ok || raw == nil {
+		return nil, fmt.Errorf("columns is required")
+	}
+	items, err := asObjectSlice(raw)
+	if err != nil {
+		return nil, fmt.Errorf("columns: %w", err)
+	}
+	writes := make([]anytypefiles.ColumnWidthWrite, 0, len(items))
+	for i, item := range items {
+		width, ok := item["width_px"].(float64)
+		if !ok {
+			return nil, fmt.Errorf("columns[%d]: width_px is required and must be a number", i)
+		}
+		writes = append(writes, anytypefiles.ColumnWidthWrite{
+			Column:      optionalInt(item, "column", 0),
+			ColumnID:    optionalString(item, "column_id"),
+			ColumnGiven: hasArg(item, "column"),
+			WidthPx:     width,
+		})
+	}
+
+	client, spaceID, objectID, tableID, err := s.tableTarget(args)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	info, updated, snapped, err := client.SetTableColumnWidths(context.Background(), spaceID, objectID, tableID, writes)
+	if err != nil {
+		return nil, err
+	}
+	extra := map[string]any{"updated_column_ids": updated, "updated": true}
+	if len(snapped) > 0 {
+		extra["snapped"] = snapped
+		extra["note"] = fmt.Sprintf("stored as the GUI displays them: within %d px of a multiple of %d px snapped onto it, fractions dropped",
+			anytypefiles.TableColumnSnap, anytypefiles.TableColumnSnapStep)
+	}
+	return tableResult(spaceID, objectID, info, extra), nil
 }

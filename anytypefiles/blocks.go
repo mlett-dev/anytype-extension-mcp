@@ -66,6 +66,11 @@ type BlockInfo struct {
 	// the row evenly, which is also what heart writes when a column is added
 	// or removed.
 	Width float64 `json:"width,omitempty"`
+
+	// WidthPx is the width of a table column in pixels, as the GUI shows it.
+	// Absent means the GUI default (TableColumnDefaultWidth). A separate name
+	// from Width on purpose: that one is a share of a page row, this is px.
+	WidthPx int `json:"width_px,omitempty"`
 }
 
 var textStyles = map[string]model.BlockContentTextStyle{
@@ -357,6 +362,7 @@ func blockFromModel(b *model.Block) BlockInfo {
 		info.IsHeader = content.TableRow.IsHeader
 	case *model.BlockContentOfTableColumn:
 		info.Kind = "table_column"
+		info.WidthPx, _ = tableColumnWidthPx(b.GetFields())
 	case *model.BlockContentOfLayout:
 		info.Kind = "layout"
 		if content.Layout.Style == model.BlockContentLayout_Column {

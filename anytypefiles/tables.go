@@ -22,7 +22,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+
+	"github.com/gogo/protobuf/types"
 
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
@@ -52,10 +55,14 @@ type TableCell struct {
 }
 
 // TableLine is a row or a column of a table.
+//
+// WidthPx is only ever set on columns, and only when the column has a width of
+// its own; absent means TableColumnDefaultWidth.
 type TableLine struct {
 	ID       string `json:"id"`
 	Index    int    `json:"index"`
 	IsHeader bool   `json:"is_header,omitempty"`
+	WidthPx  int    `json:"width_px,omitempty"`
 }
 
 // TableInfo is the resolved structure of one table block.
@@ -159,7 +166,7 @@ func buildTableInfo(blocks []BlockInfo, tableBlockID string) (TableInfo, error) 
 		switch child.Style {
 		case "tablecolumns":
 			for i, colID := range child.ChildrenIDs {
-				info.Columns = append(info.Columns, TableLine{ID: colID, Index: i})
+				info.Columns = append(info.Columns, TableLine{ID: colID, Index: i, WidthPx: byID[colID].WidthPx})
 			}
 		case "tablerows":
 			rowIDs = child.ChildrenIDs
@@ -614,6 +621,157 @@ func (c *Client) SortTable(ctx context.Context, spaceID, objectID, tableBlockID,
 		return TableInfo{}, fmt.Errorf("BlockTableSort error (%s): %s", resp.Error.Code, resp.Error.Description)
 	}
 	return c.InspectTable(ctx, spaceID, objectID, info.BlockID)
+}
+
+// Column widths.
+//
+// heart does not know about them: the GUI stores a pixel width as the field
+// "width" on the column block and is the only reader. These constants and
+// tableColumnDisplayWidth mirror anytype-ts (J.Size.table in src/json/size.ts,
+// checkWidth in src/ts/component/block/table.tsx), identical in v0.56.1, v0.57.4
+// and develop as read on 2026-10-24. Writes
+// are normalised the same way, so a width read back is the width displayed.
+const (
+	TableColumnDefaultWidth = 140
+	TableColumnMinWidth     = 50
+	TableColumnMaxWidth     = 2000
+
+	// A width within TableColumnSnap of a multiple of TableColumnSnapStep is
+	// shown as that multiple.
+	TableColumnSnap      = 10
+	tableColumnSnapSteps = 5
+	TableColumnSnapStep  = TableColumnMaxWidth / tableColumnSnapSteps
+)
+
+// tableColumnDisplayWidth is what the GUI makes of a stored width: clamped to
+// the range, snapped onto a multiple of max/steps when within the snap
+// distance, floored.
+func tableColumnDisplayWidth(w float64) int {
+	w = math.Max(TableColumnMinWidth, math.Min(TableColumnMaxWidth, w))
+	for x := 1; x <= tableColumnSnapSteps; x++ {
+		s := float64(TableColumnSnapStep * x)
+		if w >= s-TableColumnSnap && w <= s+TableColumnSnap {
+			w = s
+		}
+	}
+	return int(math.Floor(w))
+}
+
+// tableColumnWidthPx reads a column's own width as the GUI displays it. A
+// missing or non-numeric field is no width of its own (false). A stored 0 is
+// not: the GUI falls back to the default only on null (`?? default`), so 0 is
+// clamped and shows as the minimum.
+func tableColumnWidthPx(fields *types.Struct) (int, bool) {
+	value, ok := fields.GetFields()["width"]
+	if !ok {
+		return 0, false
+	}
+	n, ok := value.GetKind().(*types.Value_NumberValue)
+	if !ok || math.IsNaN(n.NumberValue) || math.IsInf(n.NumberValue, 0) {
+		return 0, false
+	}
+	return tableColumnDisplayWidth(n.NumberValue), true
+}
+
+// ColumnWidthWrite sets one table column's width. WidthPx 0 removes the
+// column's own width, which puts it back on the GUI default.
+type ColumnWidthWrite struct {
+	Column      int
+	ColumnID    string
+	ColumnGiven bool
+	WidthPx     float64
+}
+
+// SnappedWidth is a requested width that is stored differently, because the
+// GUI would have displayed it differently.
+type SnappedWidth struct {
+	ColumnID  string  `json:"column_id"`
+	Requested float64 `json:"requested"`
+	WidthPx   int     `json:"width_px"`
+}
+
+// SetTableColumnWidths sets the pixel width of table columns. Columns that are
+// not mentioned keep theirs.
+func (c *Client) SetTableColumnWidths(ctx context.Context, spaceID, objectID, tableBlockID string, writes []ColumnWidthWrite) (TableInfo, []string, []SnappedWidth, error) {
+	if len(writes) == 0 {
+		return TableInfo{}, nil, nil, errors.New("columns is required")
+	}
+	raw, err := c.objectBlocks(ctx, spaceID, objectID)
+	if err != nil {
+		return TableInfo{}, nil, nil, err
+	}
+	blocks := make([]BlockInfo, 0, len(raw))
+	byID := make(map[string]*model.Block, len(raw))
+	for _, b := range raw {
+		blocks = append(blocks, blockFromModel(b))
+		byID[b.Id] = b
+	}
+	info, err := buildTableInfo(blocks, tableBlockID)
+	if err != nil {
+		return TableInfo{}, nil, nil, err
+	}
+	// lineID hands a raw id back unchecked. Here that would write a pixel
+	// value onto whatever block it names — on a page column, a width of 250
+	// where a share of the row belongs.
+	isColumn := make(map[string]bool, len(info.Columns))
+	for _, col := range info.Columns {
+		isColumn[col.ID] = true
+	}
+
+	fields := make([]*pb.RpcBlockListSetFieldsRequestBlockField, 0, len(writes))
+	columnIDs := make([]string, 0, len(writes))
+	var snapped []SnappedWidth
+	for i, w := range writes {
+		colID, err := info.lineID("column", "column", w.ColumnID, w.Column, w.ColumnGiven)
+		if err != nil {
+			return TableInfo{}, nil, nil, fmt.Errorf("columns[%d]: %w", i, err)
+		}
+		if !isColumn[colID] {
+			return TableInfo{}, nil, nil, fmt.Errorf("columns[%d]: %s is not a column of table %s; take column ids from table-inspect", i, colID, info.BlockID)
+		}
+		for _, seen := range columnIDs {
+			if seen == colID {
+				return TableInfo{}, nil, nil, fmt.Errorf("columns[%d]: column %s is given twice", i, colID)
+			}
+		}
+		columnIDs = append(columnIDs, colID)
+
+		// SetFields replaces the whole struct, so the other fields are carried
+		// over. Leaving "width" out is the reset: a stored 0 would show as the
+		// minimum, not the default.
+		merged := &types.Struct{Fields: map[string]*types.Value{}}
+		for key, value := range byID[colID].GetFields().GetFields() {
+			if key != "width" {
+				merged.Fields[key] = value
+			}
+		}
+		if w.WidthPx != 0 {
+			if math.IsNaN(w.WidthPx) || w.WidthPx < TableColumnMinWidth || w.WidthPx > TableColumnMaxWidth {
+				return TableInfo{}, nil, nil, fmt.Errorf("columns[%d]: width_px %v is outside %d-%d; 0 goes back to the default of %d",
+					i, w.WidthPx, TableColumnMinWidth, TableColumnMaxWidth, TableColumnDefaultWidth)
+			}
+			stored := tableColumnDisplayWidth(w.WidthPx)
+			if float64(stored) != w.WidthPx {
+				snapped = append(snapped, SnappedWidth{ColumnID: colID, Requested: w.WidthPx, WidthPx: stored})
+			}
+			merged.Fields["width"] = &types.Value{Kind: &types.Value_NumberValue{NumberValue: float64(stored)}}
+		}
+		fields = append(fields, &pb.RpcBlockListSetFieldsRequestBlockField{BlockId: colID, Fields: merged})
+	}
+
+	callCtx, cancel := c.contextWithAuth(ctx)
+	defer cancel()
+	resp, err := c.rpc.BlockListSetFields(callCtx, &pb.RpcBlockListSetFieldsRequest{
+		ContextId: objectID, BlockFields: fields,
+	})
+	if err != nil {
+		return TableInfo{}, nil, nil, fmt.Errorf("gRPC BlockListSetFields failed: %w", err)
+	}
+	if resp.Error != nil && resp.Error.Code != pb.RpcBlockListSetFieldsResponseError_NULL {
+		return TableInfo{}, nil, nil, fmt.Errorf("BlockListSetFields error (%s): %s", resp.Error.Code, resp.Error.Description)
+	}
+	info, err = c.InspectTable(ctx, spaceID, objectID, info.BlockID)
+	return info, columnIDs, snapped, err
 }
 
 // tablePosition maps a caller's position onto what the table RPCs accept.

@@ -121,6 +121,10 @@ func normaliseWidths(widths []float64) ([]float64, error) {
 }
 
 // findLayoutRow walks up from a block to the row its column belongs to.
+//
+// A table's own blocks are refused before the walk starts. A table can sit in
+// a page column, and walking up from its column block would reach that page
+// row: pixel widths meant for the table would land there as shares.
 func findLayoutRow(blocks map[string]*model.Block, blockID string) (string, error) {
 	block, ok := blocks[blockID]
 	if !ok {
@@ -129,6 +133,9 @@ func findLayoutRow(blocks map[string]*model.Block, blockID string) (string, erro
 	if isLayout(block, model.BlockContentLayout_Row) {
 		return blockID, nil
 	}
+	if isTablePart(block) {
+		return "", tableColumnsError(blockID)
+	}
 
 	parent := make(map[string]string, len(blocks))
 	for id, b := range blocks {
@@ -136,6 +143,7 @@ func findLayoutRow(blocks map[string]*model.Block, blockID string) (string, erro
 			parent[child] = id
 		}
 	}
+	inTable := false
 	for at, hops := blockID, 0; hops < 8; hops++ {
 		up, ok := parent[at]
 		if !ok {
@@ -144,11 +152,27 @@ func findLayoutRow(blocks map[string]*model.Block, blockID string) (string, erro
 		if isLayout(blocks[up], model.BlockContentLayout_Row) {
 			return up, nil
 		}
+		inTable = inTable || blocks[up].GetTable() != nil
 		at = up
+	}
+	if inTable {
+		return "", tableColumnsError(blockID)
 	}
 	return "", fmt.Errorf(
 		"block %s is not inside a row of columns. Columns come into being by moving a block next to another one: "+
 			"block-move with position=left or right and drop_target_id set to the block it should sit beside", blockID)
+}
+
+// isTablePart reports the blocks that make up a table's structure, as opposed
+// to the text blocks in its cells.
+func isTablePart(block *model.Block) bool {
+	return block.GetTable() != nil || block.GetTableColumn() != nil || block.GetTableRow() != nil ||
+		isLayout(block, model.BlockContentLayout_TableColumns) || isLayout(block, model.BlockContentLayout_TableRows)
+}
+
+func tableColumnsError(blockID string) error {
+	return fmt.Errorf("block %s belongs to a table. block-column-width sizes page columns side by side; "+
+		"table columns are sized in pixels with table-column-width", blockID)
 }
 
 func isLayout(block *model.Block, style model.BlockContentLayoutStyle) bool {
@@ -161,6 +185,20 @@ func isLayout(block *model.Block, style model.BlockContentLayoutStyle) bool {
 
 // showBlocks reads an object's blocks as heart stores them, fields included.
 func (c *Client) showBlocks(ctx context.Context, spaceID, objectID string) (map[string]*model.Block, error) {
+	blocks, err := c.objectBlocks(ctx, spaceID, objectID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*model.Block, len(blocks))
+	for _, b := range blocks {
+		out[b.Id] = b
+	}
+	return out, nil
+}
+
+// objectBlocks is showBlocks in heart's order, for callers that also need
+// BlockInfo from the same read.
+func (c *Client) objectBlocks(ctx context.Context, spaceID, objectID string) ([]*model.Block, error) {
 	if strings.TrimSpace(objectID) == "" {
 		return nil, errors.New("object_id is required")
 	}
@@ -176,9 +214,5 @@ func (c *Client) showBlocks(ctx context.Context, spaceID, objectID string) (map[
 	if resp.Error != nil && resp.Error.Code != pb.RpcObjectShowResponseError_NULL {
 		return nil, fmt.Errorf("ObjectShow error (%s): %s", resp.Error.Code, resp.Error.Description)
 	}
-	out := make(map[string]*model.Block, len(resp.GetObjectView().GetBlocks()))
-	for _, b := range resp.GetObjectView().GetBlocks() {
-		out[b.Id] = b
-	}
-	return out, nil
+	return resp.GetObjectView().GetBlocks(), nil
 }

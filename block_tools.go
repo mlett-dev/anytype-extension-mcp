@@ -35,7 +35,7 @@ func (s *mcpServer) blockToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name":        "block-list",
-			"description": "Read the block structure of an object: every block with its id, kind, style, text, checkbox state, inline marks, callout emoji and children, plus card_style, icon_size, description and property_keys for link blocks, property_key for relation blocks, target_object_id for embedded queries, and width for page columns. Call this before any block edit — all other block tools need the ids from here. Unlike get-object-compact with markdown, this preserves block identity and checkbox state.\n\nStyles and mark types come back under the same names the writing tools accept, so a value read here can be passed straight back. The one exception is style=title, the object's name block, which block-turn-into deliberately does not take.",
+			"description": "Read the block structure of an object: every block with its id, kind, style, text, checkbox state, inline marks, callout emoji and children, plus card_style, icon_size, description and property_keys for link blocks, property_key for relation blocks, target_object_id for embedded queries, width (a share of the row) for page columns and width_px for table columns. Call this before any block edit — all other block tools need the ids from here. Unlike get-object-compact with markdown, this preserves block identity and checkbox state.\n\nStyles and mark types come back under the same names the writing tools accept, so a value read here can be passed straight back. The one exception is style=title, the object's name block, which block-turn-into deliberately does not take.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Object whose blocks to read."),
@@ -488,6 +488,9 @@ func (s *mcpServer) toolBlockList(args map[string]any) (map[string]any, error) {
 			// it: an absent width means the columns share their row evenly,
 			// which is exactly how anytype stores that case.
 			entry["width"] = b.Width
+		}
+		if b.WidthPx > 0 {
+			entry["width_px"] = b.WidthPx
 		}
 		if b.PropertyKey != "" {
 			entry["property_key"] = b.PropertyKey
