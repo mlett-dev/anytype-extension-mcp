@@ -170,17 +170,57 @@ def run(s):
             swapped_type,
         )
 
-        # heart stores a file icon on a type but its reader never returns one,
-        # so there is no losing relation to clear. Saying so beats claiming
-        # success.
-        refused = s.c.call(
+        # heart stores a file icon on a type and the app shows it first, but
+        # the REST type reader never returns one; the tool checks over gRPC.
+        imaged = s.c.call(
             "update-type", space_id=s.space_id, type_id=type_id,
             icon={"format": "file", "file": image_id},
         )
         s.check(
-            "a file icon on a type is reported as not applied",
-            refused.get("icon_applied") is False and refused.get("icon_warning"),
-            refused,
+            "a file icon on a type is applied and reported",
+            "icon_warning" not in imaged
+            and (imaged["type"].get("icon") or {}).get("file") == image_id,
+            imaged,
+        )
+        read = s.c.call("get-type-compact", space_id=s.space_id, type_id=type_id, include_icon=True)
+        s.check(
+            "get-type-compact shows the file icon REST leaves out",
+            (read["type"].get("icon") or {}).get("format") == "file", read["type"].get("icon"),
+        )
+        listed = s.c.call("list-types-compact", space_id=s.space_id, include_icon=True, limit=200)
+        mine = [t for t in listed["types"] if t.get("id") == type_id]
+        s.check(
+            "list-types-compact shows it too",
+            mine and (mine[0].get("icon") or {}).get("format") == "file", mine,
+        )
+
+        # Removing: REST refuses an empty built-in icon, the tool clears all
+        # icon relations over gRPC instead.
+        s.c.call("update-type", space_id=s.space_id, type_id=type_id,
+                 icon={"format": "icon", "name": "book", "color": "red"})
+        removed = s.c.call("update-type", space_id=s.space_id, type_id=type_id, icon=None)
+        read = s.c.call("get-type-compact", space_id=s.space_id, type_id=type_id, include_icon=True)
+        s.check(
+            "icon null removes a type's built-in icon",
+            "icon_warning" not in removed and not read["type"].get("icon"),
+            (removed.get("icon_warning"), read["type"].get("icon")),
+        )
+        s.c.call("update-type", space_id=s.space_id, type_id=type_id,
+                 icon={"format": "file", "file": image_id})
+        s.c.call("update-type", space_id=s.space_id, type_id=type_id, icon={"format": "icon", "name": ""})
+        read = s.c.call("get-type-compact", space_id=s.space_id, type_id=type_id, include_icon=True)
+        s.check(
+            "an empty built-in icon removes an image icon too",
+            not read["type"].get("icon"), read["type"].get("icon"),
+        )
+
+        named = s.page("icon remove")
+        s.c.call("update-object-compact", space_id=s.space_id, object_id=named,
+                 icon={"format": "file", "file": image_id})
+        gone = s.c.call("update-object-compact", space_id=s.space_id, object_id=named, icon=None)
+        s.check(
+            "icon null alone removes an object's image icon",
+            gone.get("updated") is True and not icon_of(s, named), (gone, icon_of(s, named)),
         )
     finally:
         staged.unlink(missing_ok=True)

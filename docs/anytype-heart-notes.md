@@ -972,3 +972,7 @@ blocks added, removed, or changed in text.
 ## What REST leaves out of an object's properties
 
 Measured against heart 0.50.8 (REST API 2025-11-08): a key holding null is never listed; an empty list (`tag: []`) is not listed; an empty string depends on the format (`description: ""` is listed, `url: ""` is not); `false` is listed. The app's properties panel lists every key the object holds, so REST and the app disagree exactly on the empty ones. The compact read tools fill the gap with `empty_keys`, read over gRPC.
+
+## Type icons: images work, REST cannot see them; removal needs gRPC
+
+heart stores an image icon on a type (`iconImage`) and the app shows it ahead of a built-in icon or an emoji (anytype-ts iconObject, type layout), but the REST type reader passes an empty image to the icon resolver and never reports it. The tools therefore check a type's image icon over gRPC and fill it into `get-type-compact` / `list-types-compact`. Objects of a type show only the type's built-in icon (`iconName`) in lists, never its image or emoji (`U.Object.defaultIcon`). REST refuses an empty built-in icon ("invalid icon name") and refuses built-in icons on objects altogether ("icon name and color are not supported for object"); removing an icon empties all icon relations over gRPC.

@@ -27,20 +27,13 @@ import (
 type iconTarget struct {
 	objectID string
 
-	// rendersFileIcons is false for types. anytype-heart's type reader passes
-	// an empty image to the icon resolver (core/api/service/type.go), so a file
-	// icon on a type is stored but can never be read back, no matter which
-	// other relations are cleared. Repairing that is not possible; saying so is.
-	rendersFileIcons bool
-
 	// reread fetches the current state of the target from the REST API.
 	reread func() (map[string]any, error)
 }
 
 func (s *mcpServer) objectIconTarget(spaceID, objectID string) iconTarget {
 	return iconTarget{
-		objectID:         objectID,
-		rendersFileIcons: true,
+		objectID: objectID,
 		reread: func() (map[string]any, error) {
 			payload, err := s.anytypeAPIRequest(http.MethodGet,
 				"/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, nil)
@@ -54,8 +47,7 @@ func (s *mcpServer) objectIconTarget(spaceID, objectID string) iconTarget {
 
 func (s *mcpServer) typeIconTarget(spaceID, typeID string) iconTarget {
 	return iconTarget{
-		objectID:         typeID,
-		rendersFileIcons: false,
+		objectID: typeID,
 		reread: func() (map[string]any, error) {
 			payload, err := s.anytypeAPIRequest(http.MethodGet,
 				"/v1/spaces/"+url.PathEscape(spaceID)+"/types/"+url.PathEscape(typeID), nil, nil)
@@ -119,11 +111,6 @@ func (s *mcpServer) applyIcon(target iconTarget, want string, obj map[string]any
 	// requested icon that never shows is a failed write.
 	showing := reportedIconFormat(obj) == want
 
-	if want == anytypefiles.IconFormatFile && !target.rendersFileIcons {
-		return obj, false, fmt.Sprintf(
-			"the file icon was stored but anytype-heart never reads a file icon back on a type, so the API keeps reporting %s; use an emoji or a built-in icon instead",
-			describeReportedIcon(reportedIconFormat(obj)))
-	}
 	if !anytypefiles.IconFormatKnown(want) {
 		if showing {
 			return obj, true, ""
@@ -171,8 +158,9 @@ func (s *mcpServer) applyIcon(target iconTarget, want string, obj map[string]any
 // the payload when the icon is not the one that was asked for. The payload
 // comes back untouched when the call carried no icon.
 //
-// Types are the one target where the repair can fail for good: heart stores a
-// file icon on them but never reads one back, so the warning is the result.
+// A file icon on a type is checked over gRPC: heart's REST type reader passes
+// an empty image to the icon resolver (core/api/service/type.go) and never
+// reports one, while the app shows it, ahead of a built-in icon or an emoji.
 func (s *mcpServer) verifyTypeIcon(spaceID string, args map[string]any, payload map[string]any) map[string]any {
 	want := requestedIconFormat(args)
 	if want == "" {
@@ -187,7 +175,16 @@ func (s *mcpServer) verifyTypeIcon(spaceID string, args map[string]any, payload 
 		return payload
 	}
 
-	fresh, applied, note := s.applyIcon(s.typeIconTarget(spaceID, typeID), want, typeObj)
+	var (
+		fresh   map[string]any
+		applied bool
+		note    string
+	)
+	if want == anytypefiles.IconFormatFile {
+		fresh, applied, note = s.applyTypeFileIcon(spaceID, typeID, iconFileID(args), typeObj)
+	} else {
+		fresh, applied, note = s.applyIcon(s.typeIconTarget(spaceID, typeID), want, typeObj)
+	}
 	payload["type"] = fresh
 	for key, value := range iconFields(note, applied) {
 		payload[key] = value
@@ -216,5 +213,105 @@ func iconFields(note string, applied bool) map[string]any {
 	return map[string]any{
 		"icon_applied": false,
 		"icon_warning": note,
+	}
+}
+
+// iconFileID is the image object a file icon names.
+func iconFileID(args map[string]any) string {
+	icon, _ := args["icon"].(map[string]any)
+	return stringValue(icon["file"])
+}
+
+// applyTypeFileIcon clears the built-in icon and the emoji a type may still
+// hold, then confirms over gRPC that the image is the icon it has, and reports
+// it the way REST reports an object's file icon.
+func (s *mcpServer) applyTypeFileIcon(spaceID, typeID, fileID string, typeObj map[string]any) (map[string]any, bool, string) {
+	client, err := s.grpcClient()
+	if err != nil {
+		return typeObj, false, fmt.Sprintf("the file icon was sent, but it cannot be checked: %v", err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+	if err := client.ClearIconRelationsExcept(ctx, typeID, anytypefiles.IconFormatFile); err != nil {
+		return typeObj, false, fmt.Sprintf("the file icon was stored, but the previous icon could not be cleared: %v", err)
+	}
+	states, err := client.IconStates(ctx, spaceID, []string{typeID})
+	if err != nil {
+		return typeObj, false, fmt.Sprintf("the file icon was stored, but reading it back failed: %v", err)
+	}
+	st := states[typeID]
+	if st.Image == "" || (fileID != "" && st.Image != fileID) || st.Name != "" || st.Emoji != "" {
+		return typeObj, false, "the type does not hold the requested file icon alone after the write"
+	}
+	typeObj["icon"] = map[string]any{"format": anytypefiles.IconFormatFile, "file": st.Image}
+	return typeObj, true, ""
+}
+
+// iconRemoval is true when a call asks for no icon: icon null, or a known
+// format with an empty value ({"format":"emoji","emoji":""}).
+func iconRemoval(args map[string]any) bool {
+	raw, present := args["icon"]
+	if !present {
+		return false
+	}
+	if raw == nil {
+		return true
+	}
+	icon, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	valueKey, known := iconValueKeys[stringValue(icon["format"])]
+	return known && stringValue(icon[valueKey]) == ""
+}
+
+// removeIcon empties every icon relation over gRPC and confirms it. REST can
+// clear an emoji but refuses an empty built-in icon, and clears only the one
+// relation it is given.
+func (s *mcpServer) removeIcon(spaceID, objectID string) (bool, string) {
+	client, err := s.grpcClient()
+	if err != nil {
+		return false, fmt.Sprintf("the icon could not be removed: %v", err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+	if err := client.ClearIcon(ctx, objectID); err != nil {
+		return false, fmt.Sprintf("the icon could not be removed: %v", err)
+	}
+	states, err := client.IconStates(ctx, spaceID, []string{objectID})
+	if err != nil {
+		return false, fmt.Sprintf("the icon was removed, but reading it back failed: %v", err)
+	}
+	if !states[objectID].Empty() {
+		return false, "an icon is still stored after the removal"
+	}
+	return true, ""
+}
+
+// fillTypeImageIcons adds the image icon REST leaves out of types, read over
+// gRPC, to every type that came back without an icon.
+func (s *mcpServer) fillTypeImageIcons(spaceID string, typeObjs []map[string]any) {
+	var ids []string
+	for _, t := range typeObjs {
+		if t["icon"] == nil && stringValue(t["id"]) != "" {
+			ids = append(ids, stringValue(t["id"]))
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	client, err := s.grpcClient()
+	if err != nil {
+		return
+	}
+	defer client.Close()
+	states, err := client.IconStates(context.Background(), spaceID, ids)
+	if err != nil {
+		return
+	}
+	for _, t := range typeObjs {
+		if st, ok := states[stringValue(t["id"])]; ok && t["icon"] == nil && st.Image != "" {
+			t["icon"] = map[string]any{"format": anytypefiles.IconFormatFile, "file": st.Image}
+		}
 	}
 }

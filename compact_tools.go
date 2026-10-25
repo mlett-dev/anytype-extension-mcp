@@ -303,19 +303,10 @@ func (s *mcpServer) toolObjectUpdateCompact(args map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	if len(body) == 0 {
-		return nil, fmt.Errorf("at least one update field is required: icon, markdown, name, properties, type_key")
-	}
-
-	payload, err := s.anytypeAPIRequest(http.MethodPatch, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, body)
+	obj, iconOK, iconNote, err := s.patchObject(spaceID, objectID, args, body)
 	if err != nil {
 		return nil, err
 	}
-	obj, err := objectFromPayload(payload, "object")
-	if err != nil {
-		return nil, err
-	}
-	obj, iconOK, iconNote := s.applyIcon(s.objectIconTarget(spaceID, objectID), requestedIconFormat(args), obj)
 	opts := parseCompactOptions(args)
 	result := map[string]any{
 		"space_id":     spaceID,
@@ -378,20 +369,7 @@ func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[strin
 			}
 			continue
 		}
-		if len(body) == 0 {
-			results = append(results, map[string]any{
-				"index":     i,
-				"object_id": objectID,
-				"error":     "at least one update field is required: icon, markdown, name, properties, type_key",
-			})
-			errorCount++
-			if stopOnError {
-				break
-			}
-			continue
-		}
-
-		payload, err := s.anytypeAPIRequest(http.MethodPatch, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, body)
+		obj, iconOK, iconNote, err := s.patchObject(spaceID, objectID, item, body)
 		if err != nil {
 			results = append(results, map[string]any{
 				"index":     i,
@@ -404,20 +382,6 @@ func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[strin
 			}
 			continue
 		}
-		obj, err := objectFromPayload(payload, "object")
-		if err != nil {
-			results = append(results, map[string]any{
-				"index":     i,
-				"object_id": objectID,
-				"error":     err.Error(),
-			})
-			errorCount++
-			if stopOnError {
-				break
-			}
-			continue
-		}
-		obj, iconOK, iconNote := s.applyIcon(s.objectIconTarget(spaceID, objectID), requestedIconFormat(item), obj)
 		entry := map[string]any{
 			"index":     i,
 			"object_id": objectID,
@@ -466,7 +430,49 @@ func createObjectRequestBody(args map[string]any) (map[string]any, error) {
 			body[key] = value
 		}
 	}
+	// A new object has no icon to remove.
+	if iconRemoval(args) {
+		delete(body, "icon")
+	}
 	return body, nil
+}
+
+// patchObject sends an update and makes its icon part hold: the requested icon
+// alone, or no icon at all when the call removes it (REST refuses an empty
+// built-in icon, so removal goes over gRPC). It returns the object as it stands
+// afterwards.
+func (s *mcpServer) patchObject(spaceID, objectID string, args, body map[string]any) (map[string]any, bool, string, error) {
+	removal := iconRemoval(args)
+	if removal {
+		delete(body, "icon")
+	}
+	if len(body) == 0 && !removal {
+		return nil, false, "", fmt.Errorf("at least one update field is required: icon, markdown, name, properties, type_key")
+	}
+	target := s.objectIconTarget(spaceID, objectID)
+	var obj map[string]any
+	if len(body) > 0 {
+		payload, err := s.anytypeAPIRequest(http.MethodPatch, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, body)
+		if err != nil {
+			return nil, false, "", err
+		}
+		if obj, err = objectFromPayload(payload, "object"); err != nil {
+			return nil, false, "", err
+		}
+	}
+	if !removal {
+		obj, ok, note := s.applyIcon(target, requestedIconFormat(args), obj)
+		return obj, ok, note, nil
+	}
+	ok, note := s.removeIcon(spaceID, objectID)
+	fresh, err := target.reread()
+	if err != nil {
+		if obj == nil {
+			return nil, false, "", err
+		}
+		return obj, ok, note, nil
+	}
+	return fresh, ok, note, nil
 }
 
 func updateObjectRequestBody(args map[string]any) (map[string]any, error) {
@@ -650,12 +656,17 @@ func (s *mcpServer) toolListTypesCompact(args map[string]any) (map[string]any, e
 	}
 	opts := parseTypeCompactOptions(args)
 	rawData, _ := payload["data"].([]any)
-	types := make([]map[string]any, 0, len(rawData))
+	typeObjs := make([]map[string]any, 0, len(rawData))
 	for _, raw := range rawData {
-		typeObj, ok := raw.(map[string]any)
-		if !ok {
-			continue
+		if typeObj, ok := raw.(map[string]any); ok {
+			typeObjs = append(typeObjs, typeObj)
 		}
+	}
+	if opts.includeIcon {
+		s.fillTypeImageIcons(spaceID, typeObjs)
+	}
+	types := make([]map[string]any, 0, len(typeObjs))
+	for _, typeObj := range typeObjs {
 		types = append(types, compactTypeDefinition(typeObj, opts))
 	}
 
@@ -700,6 +711,9 @@ func (s *mcpServer) toolGetTypeCompact(args map[string]any) (map[string]any, err
 	// because that response multiplies them by the number of types.
 	if _, explicit := args["include_properties"]; !explicit {
 		opts.includeProperties = true
+	}
+	if opts.includeIcon {
+		s.fillTypeImageIcons(spaceID, []map[string]any{typeObj})
 	}
 	return map[string]any{
 		"space_id":     spaceID,

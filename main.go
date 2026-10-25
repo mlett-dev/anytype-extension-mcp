@@ -17,11 +17,11 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.42.0"
+	serverVersion = "0.43.0"
 	protoVersion  = "2025-11-25"
 )
 
-const iconPayloadDescription = "The object's icon. Three shapes are accepted: an emoji, {\"format\":\"emoji\",\"emoji\":\"🍰\"}; an uploaded image, {\"format\":\"file\",\"file\":\"<image object id from file-upload>\"}, which is how a custom picture becomes an icon; or a built-in symbol, {\"format\":\"icon\",\"name\":\"book\",\"color\":\"red\"}. The icon is a small square next to the title — for the wide banner above it use object-set-cover instead."
+const iconPayloadDescription = "The object's icon. Two shapes are accepted: an emoji, {\"format\":\"emoji\",\"emoji\":\"🍰\"}; an uploaded image, {\"format\":\"file\",\"file\":\"<image object id from file-upload>\"}, which is how a custom picture becomes an icon. A built-in symbol ({\"format\":\"icon\",...}) is refused on objects; only types take one. null, or a shape with an empty value, removes the icon. The icon is a small square next to the title — for the wide banner above it use object-set-cover instead."
 
 const propertyLinkValueDescription = "Property updates must use the typed Anytype property-link shape. Every item needs key plus exactly one typed value field: text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects. Do not send {key, value:null}; Anytype cannot infer the value type from null. Use objects for relation/object links, files for file attachments, [] to clear object/file/multi-select links, and an empty string/false only for formats that accept that type."
 
@@ -720,7 +720,7 @@ func (s *mcpServer) allToolDefs() []any {
 					"description": "Anytype object ID.",
 				},
 				"icon": map[string]any{
-					"type":                 "object",
+					"type":                 []string{"object", "null"},
 					"description":          iconPayloadDescription,
 					"additionalProperties": true,
 				},
@@ -767,7 +767,7 @@ func (s *mcpServer) allToolDefs() []any {
 								"description": "Anytype object ID to update.",
 							},
 							"icon": map[string]any{
-								"type":                 "object",
+								"type":                 []string{"object", "null"},
 								"description":          iconPayloadDescription,
 								"additionalProperties": true,
 							},

@@ -80,7 +80,10 @@ func (c *Client) ClearIconRelationsExcept(ctx context.Context, objectID, format 
 	if len(keys) == 0 {
 		return nil
 	}
+	return c.setIconRelationsEmpty(ctx, objectID, keys)
+}
 
+func (c *Client) setIconRelationsEmpty(ctx context.Context, objectID string, keys []string) error {
 	details := make([]*model.Detail, 0, len(keys))
 	for _, key := range keys {
 		// iconOption is a number and the others are strings; heart stores the
@@ -104,4 +107,65 @@ func (c *Client) ClearIconRelationsExcept(ctx context.Context, objectID, format 
 		return fmt.Errorf("ObjectSetDetails error (%s): %s", resp.Error.Code, resp.Error.Description)
 	}
 	return nil
+}
+
+// iconRelations are every relation an icon can live in.
+var iconRelations = []string{"iconName", "iconOption", "iconEmoji", "iconImage"}
+
+// ClearIcon empties every icon relation, so the object or type has no icon of
+// its own. The REST API cannot express this for a built-in icon: it refuses an
+// empty name with 400 "invalid icon name".
+func (c *Client) ClearIcon(ctx context.Context, objectID string) error {
+	if strings.TrimSpace(objectID) == "" {
+		return errors.New("object_id is required")
+	}
+	return c.setIconRelationsEmpty(ctx, objectID, iconRelations)
+}
+
+// IconState is what an object's icon relations hold.
+type IconState struct {
+	Name  string
+	Emoji string
+	Image string
+}
+
+// Empty is true when no icon relation holds anything.
+func (s IconState) Empty() bool { return s.Name == "" && s.Emoji == "" && s.Image == "" }
+
+// IconStates reads the icon relations of objects or types over gRPC. The REST
+// type reader never returns an image icon (core/api/service/type.go passes an
+// empty image to the resolver), though the app shows it; this is how it is
+// seen at all.
+func (c *Client) IconStates(ctx context.Context, spaceID string, ids []string) (map[string]IconState, error) {
+	out := map[string]IconState{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	values := make([]*types.Value, 0, len(ids))
+	for _, id := range ids {
+		values = append(values, &types.Value{Kind: &types.Value_StringValue{StringValue: id}})
+	}
+	records, err := c.searchAll(ctx, &pb.RpcObjectSearchRequest{
+		SpaceId: spaceID,
+		Filters: []*model.BlockContentDataviewFilter{{
+			RelationKey: "id", Condition: model.BlockContentDataviewFilter_In,
+			Value: &types.Value{Kind: &types.Value_ListValue{ListValue: &types.ListValue{Values: values}}},
+		}},
+		Keys: []string{"id", "iconName", "iconEmoji", "iconImage"},
+	}, "the icons")
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range records {
+		id, _ := fromProtoValue(structField(r, "id")).(string)
+		if id == "" {
+			continue
+		}
+		var st IconState
+		st.Name, _ = fromProtoValue(structField(r, "iconName")).(string)
+		st.Emoji, _ = fromProtoValue(structField(r, "iconEmoji")).(string)
+		st.Image, _ = fromProtoValue(structField(r, "iconImage")).(string)
+		out[id] = st
+	}
+	return out, nil
 }

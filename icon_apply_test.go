@@ -45,8 +45,7 @@ func TestReportedIconFormatIgnoresTheFileURL(t *testing.T) {
 func TestApplyIconDoesNothingWhenNoIconWasRequested(t *testing.T) {
 	s := &mcpServer{}
 	target := iconTarget{
-		objectID:         "obj-id",
-		rendersFileIcons: true,
+		objectID: "obj-id",
 		reread: func() (map[string]any, error) {
 			t.Fatal("applyIcon must not re-read when no icon was requested")
 			return nil, nil
@@ -67,8 +66,7 @@ func TestApplyIconStaysAppliedWhenOnlyTheCleanupFails(t *testing.T) {
 	// build — the same path an unavailable connection takes.
 	s := &mcpServer{}
 	target := iconTarget{
-		objectID:         "obj-id",
-		rendersFileIcons: true,
+		objectID: "obj-id",
 		reread: func() (map[string]any, error) {
 			t.Fatal("nothing visible changed, so there is nothing to re-read")
 			return nil, nil
@@ -91,29 +89,23 @@ func TestApplyIconStaysAppliedWhenOnlyTheCleanupFails(t *testing.T) {
 	}
 }
 
-// A file icon on a type is stored but never read back, so there is no losing
-// relation to clear and no point reaching for gRPC.
-func TestApplyIconRefusesFileIconOnTypeWithoutRepairing(t *testing.T) {
-	s := &mcpServer{}
-	target := iconTarget{
-		objectID:         "type-id",
-		rendersFileIcons: false,
-		reread: func() (map[string]any, error) {
-			t.Fatal("a file icon on a type is unrepairable and must not be re-read")
-			return nil, nil
-		},
+func TestIconRemoval(t *testing.T) {
+	cases := []struct {
+		args map[string]any
+		want bool
+	}{
+		{map[string]any{"icon": nil}, true},
+		{map[string]any{"icon": map[string]any{"format": "emoji", "emoji": ""}}, true},
+		{map[string]any{"icon": map[string]any{"format": "icon", "name": ""}}, true},
+		{map[string]any{"icon": map[string]any{"format": "file", "file": ""}}, true},
+		{map[string]any{"icon": map[string]any{"format": "emoji", "emoji": "x"}}, false},
+		{map[string]any{"icon": map[string]any{"format": "other"}}, false},
+		{map[string]any{}, false},
 	}
-	obj := map[string]any{"icon": map[string]any{"format": "icon", "name": "book"}}
-
-	got, applied, note := s.applyIcon(target, "file", obj)
-	if applied {
-		t.Fatal("expected a file icon on a type to be reported as not applied")
-	}
-	if note == "" {
-		t.Fatal("expected a warning explaining why the file icon cannot show")
-	}
-	if reportedIconFormat(got) != "icon" {
-		t.Fatalf("expected the object to come back as it stands, got %#v", got)
+	for _, c := range cases {
+		if got := iconRemoval(c.args); got != c.want {
+			t.Errorf("iconRemoval(%v) = %v, want %v", c.args, got, c.want)
+		}
 	}
 }
 

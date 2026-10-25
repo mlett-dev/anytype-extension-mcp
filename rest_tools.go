@@ -386,7 +386,7 @@ func allRestToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "update-type",
-			"description": "Update an object type's name, layout, icon or linked properties. Unlike create-type, a properties key that names no existing property is refused here rather than creating one, because on an existing type that is nearly always a misspelling; pass allow_new_properties=true when a new property really is meant. Icon writes are verified and repaired where possible; note that Anytype never reads a file icon back on a type, so use an emoji or a built-in icon there.",
+			"description": "Update an object type's name, layout, icon or linked properties. Unlike create-type, a properties key that names no existing property is refused here rather than creating one, because on an existing type that is nearly always a misspelling; pass allow_new_properties=true when a new property really is meant. Icon writes are verified and repaired. An image (format file) works as a type icon and takes precedence in the app; icon null removes the icon. Objects of the type without an icon of their own show the type's built-in icon in lists, never its image or emoji.",
 			"inputSchema": restSchema([]string{"space_id", "type_id"}, map[string]any{
 				"space_id":    spaceIDProp(),
 				"type_id":     strProp("Type ID: the bafyrei... id from list-types-compact. The type key is NOT accepted here and returns 500."),
@@ -395,8 +395,8 @@ func allRestToolDefs() []any {
 				"layout":      enumProp("New type layout.", typeLayouts),
 				"key":         strProp("New type key."),
 				"icon": map[string]any{
-					"type":        "object",
-					"description": "New icon.",
+					"type":        []string{"object", "null"},
+					"description": "New icon, shaped as for objects (emoji, file or built-in); null removes it.",
 				},
 				"properties": typePropertyLinksProp("New set of properties for the type,", true),
 				"allow_new_properties": map[string]any{
@@ -999,7 +999,9 @@ func (s *mcpServer) toolCreateType(args map[string]any) (map[string]any, error) 
 	}
 	body := map[string]any{"name": name, "plural_name": pluralName, "layout": layout}
 	setIfPresent(body, args, "key")
-	setRawIfPresent(body, args, "icon")
+	if !iconRemoval(args) {
+		setRawIfPresent(body, args, "icon")
+	}
 	setRawIfPresent(body, args, "properties")
 	payload, err := s.anytypeAPIRequest(http.MethodPost,
 		"/v1/spaces/"+url.PathEscape(spaceID)+"/types", nil, body)
@@ -1023,20 +1025,38 @@ func (s *mcpServer) toolUpdateType(args map[string]any) (map[string]any, error) 
 	setIfPresent(body, args, "plural_name")
 	setIfPresent(body, args, "layout")
 	setIfPresent(body, args, "key")
-	setRawIfPresent(body, args, "icon")
+	removal := iconRemoval(args)
+	if !removal {
+		setRawIfPresent(body, args, "icon")
+	}
 	setRawIfPresent(body, args, "properties")
-	if len(body) == 0 {
+	if len(body) == 0 && !removal {
 		return nil, fmt.Errorf("update-type needs at least one field to change")
 	}
 	if err := s.guardNewTypeProperties(spaceID, args); err != nil {
 		return nil, err
 	}
-	payload, err := s.anytypeAPIRequest(http.MethodPatch,
-		"/v1/spaces/"+url.PathEscape(spaceID)+"/types/"+url.PathEscape(typeID), nil, body)
+	typePath := "/v1/spaces/" + url.PathEscape(spaceID) + "/types/" + url.PathEscape(typeID)
+	if len(body) > 0 {
+		payload, err := s.anytypeAPIRequest(http.MethodPatch, typePath, nil, body)
+		if err != nil {
+			return nil, err
+		}
+		if !removal {
+			return s.verifyTypeIcon(spaceID, args, payload), nil
+		}
+	}
+	// No icon: every icon relation emptied over gRPC, since REST refuses an
+	// empty built-in icon.
+	ok, note := s.removeIcon(spaceID, typeID)
+	payload, err := s.anytypeAPIRequest(http.MethodGet, typePath, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	return s.verifyTypeIcon(spaceID, args, payload), nil
+	for key, value := range iconFields(note, ok) {
+		payload[key] = value
+	}
+	return payload, nil
 }
 
 func (s *mcpServer) toolDeleteType(args map[string]any) (map[string]any, error) {
