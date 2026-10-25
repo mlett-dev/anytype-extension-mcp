@@ -335,6 +335,9 @@ func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if (*last)["show_filters"] != false {
+		t.Errorf("show_filters sent as %v", (*last)["show_filters"])
+	}
 	if (*last)["all_rows"] != true || *calls != 3 {
 		t.Errorf("all_rows not passed on, or answered from memory: %v, calls=%d", *last, *calls)
 	}
@@ -382,11 +385,17 @@ func TestObjectRenderPassesViews(t *testing.T) {
 	if len(sent) != 2 || sent[0].(map[string]any)["view"] != "Kalender" || sent[0].(map[string]any)["block_id"] != "dv1" || sent[1].(map[string]any)["block_id"] != "" {
 		t.Errorf("views sent = %v", (*last)["views"])
 	}
+	if _, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "show_filters": true}); err != nil {
+		t.Fatal(err)
+	}
+	if (*last)["show_filters"] != true || *calls != 2 {
+		t.Errorf("show_filters not passed on, or answered from memory: %v, calls=%d", (*last)["show_filters"], *calls)
+	}
 	// Another view is another picture, not a repeat.
 	if _, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o"}); err != nil {
 		t.Fatal(err)
 	}
-	if *calls != 2 {
+	if *calls != 3 {
 		t.Errorf("a render with other views was answered from memory, calls=%d", *calls)
 	}
 	for _, bad := range []any{"Kalender", []any{"Kalender"}, []any{map[string]any{"block_id": "dv1"}}} {

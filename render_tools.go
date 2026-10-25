@@ -52,7 +52,7 @@ func (s *mcpServer) renderToolDefs() []any {
 		"name": "object-render",
 		"description": "Render an object as the Anytype GUI shows it, with the real Anytype frontend: an image link plus a layout report " +
 			"(table column widths, wrapped and clipped cells, px cut off at the side; per query or collection view its source, view name, " +
-			"other views, filter and sort counts, columns with cut-off cells and the width they need, rows shown of the total; " +
+			"other views, applied filters (and stored ones that filter nothing) and sorts, columns with cut-off cells and the width they need, rows shown of the total; " +
 			"text cut off at the side, images that failed to load). complete is true only when nothing is hidden: below the image, " +
 			"behind Load more, in closed toggles or past the side (cell text cut short with an ellipsis does not count); " +
 			"incomplete_reasons says what is and how to show it. " +
@@ -71,6 +71,7 @@ func (s *mcpServer) renderToolDefs() []any {
 			"full_height":    map[string]any{"type": "boolean", "description": "Capture the whole object instead of the first screen. Defaults to true.", "default": true},
 			"all_rows":       map[string]any{"type": "boolean", "description": fmt.Sprintf("Press Load more in embedded views until every row shows, up to %d per view. Defaults to false.", renderRowCap), "default": false},
 			"image":          map[string]any{"type": "boolean", "description": "false returns the layout report only, without an image. Defaults to true.", "default": true},
+			"show_filters":   map[string]any{"type": "boolean", "description": "Open the filter and sort bar of every query or collection view, as its filter button does, so the image shows each filter. Defaults to false.", "default": false},
 			"views": map[string]any{
 				"type": "array",
 				"description": "Show other views than the active ones, as a click on the view tab does, without saving the switch. " +
@@ -149,6 +150,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	fullHeight := optionalBool(args, "full_height", true)
 	allRows := optionalBool(args, "all_rows", false)
 	wantImage := optionalBool(args, "image", true)
+	showFilters := optionalBool(args, "show_filters", false)
 	views, err := renderViews(args)
 	if err != nil {
 		return nativeToolResult{}, err
@@ -159,7 +161,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 		return nativeToolResult{}, err
 	}
 	viewsKey, _ := json.Marshal(views)
-	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%s|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, viewsKey, fingerprint)
+	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%t|%s|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, showFilters, viewsKey, fingerprint)
 	now := time.Now()
 	if memo, ok := s.recentRender(key, now); ok {
 		s.note("reused", "render")
@@ -174,7 +176,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	rendered, err := s.callRenderer(map[string]any{
 		"space_id": spaceID, "object_id": objectID, "width": width, "theme": theme,
 		"format": format, "full_height": fullHeight, "expand_ids": expandIDs,
-		"all_rows": allRows, "image": wantImage, "views": views,
+		"all_rows": allRows, "image": wantImage, "views": views, "show_filters": showFilters,
 	})
 	if err != nil {
 		return nativeToolResult{}, err

@@ -379,8 +379,9 @@ JPEG or PNG, plus a layout report measured in the rendered page:
 - per query or collection view (`dataviews`, embedded or the object itself)
   its kind and view type, what it shows (for an embedded view the query or
   collection it points at, `source_id` and `source_name`, and for a query the
-  types it lists, `query_of`), the active view's name with its filter and sort
-  counts, the names of all its views when it has several (`views`), the rows
+  types it lists, `query_of`), the active view's name, the filters the GUI
+  applies (`filters`; stored ones without a value, which filter nothing, as
+  `filters_inactive`) and the sorts, `filter_bar` when the filter bar is open, the names of all its views when it has several (`views`), the rows
   shown in the image, loaded and in total, `in_image: false` when the view
   lies outside the picture, and for a grid the columns with their widths,
   `cut_off_px`, and per column the cells whose text is cut short with the
@@ -413,6 +414,10 @@ views of its own, and only their filters and sorts apply. It shows the first row
 (the view's page limit, 10 by default) above a "Load more" button.
 `all_rows: true` presses that button until every row shows, up to 500 per
 view, as a user scrolling through it would.
+
+`show_filters: true` opens the filter and sort bar of every view, as its
+filter button does, so the image shows each filter with its value. It is a
+toggle in the frontend's local storage; nothing is written.
 
 `views` shows other views than the active ones: per query or collection block
 (`block_id` as the report names it, `dataview` for the object's own; it may be

@@ -5,6 +5,11 @@ it the tool only says so, and the suite checks exactly that and stops.
 """
 
 
+def listed_view(s, obj):
+    """The id of the view the object's dataview shows first."""
+    return s.c.call("query-inspect", space_id=s.space_id, object_id=obj)["views"][0]["id"]
+
+
 def run(s):
     obj = s.page("render")
     status, msg = s.c.try_call("object-render", space_id=s.space_id, object_id=obj)
@@ -98,6 +103,18 @@ def run(s):
             s.c.call("query-inspect", space_id=s.space_id, object_id=host).get("active_view") == before, before)
     status, msg = s.c.try_call("object-render", space_id=s.space_id, object_id=host, views=[{"view": "gibt es nicht"}])
     s.check("an unknown view is an error that names the views there are", status == "err" and "Liste" in msg, msg)
+
+    # A filter with a value is applied, one without is stored and does
+    # nothing; show_filters opens the bar that shows both.
+    s.c.call("query-filter-add", space_id=s.space_id, object_id=host, view_id=listed_view(s, host),
+             property_key="name", condition="like", value="eintrag")
+    s.c.call("query-filter-add", space_id=s.space_id, object_id=host, view_id=listed_view(s, host),
+             property_key="description", condition="equal", value="")
+    s.settle(2)
+    bar = s.c.call("object-render", space_id=s.space_id, object_id=host, image=False, show_filters=True)
+    dv = ((bar.get("layout") or {}).get("dataviews") or [{}])[0]
+    s.check("show_filters opens the filter bar, and the report counts only the applied filter",
+            dv.get("filter_bar") is True and dv.get("filters") == 1 and dv.get("filters_inactive") == 1, dv)
 
     dark = s.c.call("object-render", space_id=s.space_id, object_id=obj, theme="dark", width=800, format="png")
     s.check("theme, width and format are applied",
