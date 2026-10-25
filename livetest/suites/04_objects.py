@@ -150,6 +150,29 @@ def run(s):
         and "mismatches" not in gone,
         gone,
     )
+    # A property held with no value is left out of REST's properties, but the
+    # app shows it; empty_keys names it. A removed one is gone from both.
+    s.c.call(
+        "objects-modify-property", space_id=s.space_id, object_ids=[targets[0]],
+        operations=[{"property_key": "tag", "set": []}],
+    )
+    seen = s.c.call(
+        "get-object-compact", space_id=s.space_id, object_id=targets[0], include_properties=True,
+    )["object"]
+    s.check(
+        "empty_keys names a property held empty and leaves out a removed one",
+        "tag" in (seen.get("empty_keys") or []) and "done" not in (seen.get("empty_keys") or [])
+        and "done" not in (seen.get("properties") or {}),
+        seen,
+    )
+    only = s.c.call(
+        "get-object-compact", space_id=s.space_id, object_id=targets[0], property_keys=["description"],
+    )["object"]
+    s.check(
+        "empty_keys keeps to the property_keys asked for",
+        "tag" not in (only.get("empty_keys") or []), only,
+    )
+
     # heart answers a list call with success as soon as one object took the
     # change; the object it could not reach is only logged there.
     missing = "bafyreinotthere"

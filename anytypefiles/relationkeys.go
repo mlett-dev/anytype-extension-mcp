@@ -87,6 +87,8 @@ type relationKeyMap struct {
 	// formats records each property's format, which decides what a view can do
 	// with it — grouping a kanban board is the case that matters.
 	formats map[string]model.RelationFormat
+	// hidden holds the system properties the app keeps out of its panels.
+	hidden map[string]bool
 }
 
 // kanbanGroupFormats are the property formats anytype can group a board by.
@@ -113,7 +115,7 @@ func (c *Client) loadRelationKeys(ctx context.Context, spaceID string) (*relatio
 					NumberValue: float64(model.ObjectType_relation)}},
 			},
 		},
-		Keys: []string{"id", "relationKey", "apiObjectKey", "name", "relationFormat"},
+		Keys: []string{"id", "relationKey", "apiObjectKey", "name", "relationFormat", "isHidden"},
 	}, "the property definitions")
 	if err != nil {
 		return nil, err
@@ -126,6 +128,7 @@ func (c *Client) loadRelationKeys(ctx context.Context, spaceID string) (*relatio
 		ids:        make(map[string]bool, len(records)),
 		names:      make(map[string]string, len(records)),
 		formats:    make(map[string]model.RelationFormat, len(records)),
+		hidden:     map[string]bool{},
 	}
 	for _, record := range records {
 		key, _ := fromProtoValue(structField(record, "relationKey")).(string)
@@ -133,6 +136,9 @@ func (c *Client) loadRelationKeys(ctx context.Context, spaceID string) (*relatio
 			continue
 		}
 		out.internal[key] = true
+		if hidden, _ := fromProtoValue(structField(record, "isHidden")).(bool); hidden {
+			out.hidden[key] = true
+		}
 		if id, _ := fromProtoValue(structField(record, "id")).(string); id != "" {
 			out.ids[id] = true
 		}

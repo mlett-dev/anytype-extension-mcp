@@ -58,6 +58,7 @@ func (s *mcpServer) toolListObjectsCompact(args map[string]any) (map[string]any,
 		}
 		objects = append(objects, compactListObject(obj, opts))
 	}
+	s.addEmptyKeys(spaceID, rawData, objects, opts)
 
 	out := map[string]any{
 		"space_id":            spaceID,
@@ -101,10 +102,12 @@ func (s *mcpServer) toolObjectGetCompact(args map[string]any) (map[string]any, e
 		return nil, err
 	}
 	opts := parseCompactOptions(args)
+	compact := compactListObject(obj, opts)
+	s.addEmptyKeys(spaceID, []any{obj}, []map[string]any{compact}, opts)
 	return map[string]any{
 		"space_id":     spaceID,
 		"object_id":    objectID,
-		"object":       compactListObject(obj, opts),
+		"object":       compact,
 		"api_base_url": s.cfg.apiBaseURL,
 		"api_version":  s.cfg.apiVersion,
 	}, nil
@@ -130,6 +133,8 @@ func (s *mcpServer) toolObjectsGetCompactMany(args map[string]any) (map[string]a
 	results := make([]map[string]any, 0, len(objectIDs))
 	okCount := 0
 	errorCount := 0
+	var raws []any
+	var compacts []map[string]any
 
 	for i, objectID := range objectIDs {
 		payload, err := s.anytypeAPIRequest(http.MethodGet, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), query, nil)
@@ -158,13 +163,17 @@ func (s *mcpServer) toolObjectsGetCompactMany(args map[string]any) (map[string]a
 			}
 			continue
 		}
+		compact := compactListObject(obj, opts)
+		raws = append(raws, obj)
+		compacts = append(compacts, compact)
 		results = append(results, map[string]any{
 			"index":     i,
 			"object_id": objectID,
-			"object":    compactListObject(obj, opts),
+			"object":    compact,
 		})
 		okCount++
 	}
+	s.addEmptyKeys(spaceID, raws, compacts, opts)
 
 	return map[string]any{
 		"space_id":            spaceID,
@@ -516,14 +525,19 @@ func (s *mcpServer) toolSearchCompact(args map[string]any, requireSpace bool) (m
 	if err != nil {
 		return nil, err
 	}
-	return compactPaginatedObjectsPayload(payload, parseCompactOptions(args), map[string]any{
+	opts := parseCompactOptions(args)
+	out := compactPaginatedObjectsPayload(payload, opts, map[string]any{
 		"space_id":     spaceID,
 		"offset":       offset,
 		"limit":        limit,
 		"scope":        map[bool]string{true: "space", false: "global"}[spaceID != ""],
 		"api_base_url": s.cfg.apiBaseURL,
 		"api_version":  s.cfg.apiVersion,
-	}), nil
+	})
+	rawData, _ := payload["data"].([]any)
+	objects, _ := out["objects"].([]map[string]any)
+	s.addEmptyKeys(spaceID, rawData, objects, opts)
+	return out, nil
 }
 
 // fileTypeKeys are the types whose objects Anytype's search leaves out unless
@@ -599,13 +613,18 @@ func (s *mcpServer) toolSpaceObjectsCompact(args map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	return compactPaginatedObjectsPayload(payload, parseCompactOptions(args), map[string]any{
+	opts := parseCompactOptions(args)
+	out := compactPaginatedObjectsPayload(payload, opts, map[string]any{
 		"space_id":     spaceID,
 		"offset":       offset,
 		"limit":        limit,
 		"api_base_url": s.cfg.apiBaseURL,
 		"api_version":  s.cfg.apiVersion,
-	}), nil
+	})
+	rawData, _ := payload["data"].([]any)
+	objects, _ := out["objects"].([]map[string]any)
+	s.addEmptyKeys(spaceID, rawData, objects, opts)
+	return out, nil
 }
 
 func (s *mcpServer) toolListTypesCompact(args map[string]any) (map[string]any, error) {
@@ -999,6 +1018,79 @@ func objectFromPayload(payload map[string]any, key string) (map[string]any, erro
 	return obj, nil
 }
 
+// addEmptyKeys adds empty_keys to each object whose properties were asked
+// for: the properties it holds with no value (null, "", []) that REST left
+// out, though the app's properties panel shows them. raws and objects are in
+// the same order, as the compact builders keep it. Best effort: without gRPC
+// the field is simply missing.
+func (s *mcpServer) addEmptyKeys(spaceID string, raws []any, objects []map[string]any, opts compactOptions) {
+	if !opts.includeProperties || len(objects) == 0 {
+		return
+	}
+	type entry struct {
+		raw     map[string]any
+		compact map[string]any
+	}
+	bySpace := map[string][]entry{}
+	i := 0
+	for _, raw := range raws {
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if i >= len(objects) {
+			break
+		}
+		space := spaceID
+		if space == "" {
+			space = stringValue(obj["space_id"])
+		}
+		if space != "" && stringValue(obj["id"]) != "" {
+			bySpace[space] = append(bySpace[space], entry{obj, objects[i]})
+		}
+		i++
+	}
+	if len(bySpace) == 0 {
+		return
+	}
+	client, err := s.grpcClient()
+	if err != nil {
+		return
+	}
+	defer client.Close()
+	for space, entries := range bySpace {
+		ids := make([]string, 0, len(entries))
+		for _, e := range entries {
+			ids = append(ids, stringValue(e.raw["id"]))
+		}
+		empty, err := client.EmptyKeys(context.Background(), space, ids)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			shown := map[string]bool{}
+			for _, p := range normalizeRawProperties(e.raw["properties"]) {
+				if prop, ok := p.(map[string]any); ok {
+					shown[stringValue(prop["key"])] = true
+				}
+			}
+			var keys []string
+			for _, k := range empty[stringValue(e.raw["id"])] {
+				if shown[k.Key] || shown[k.Internal] {
+					continue
+				}
+				if len(opts.propertyKeys) > 0 && !propertyMatches(map[string]any{"key": k.Key, "id": k.Internal, "name": k.Name}, opts.propertyKeys) {
+					continue
+				}
+				keys = append(keys, k.Key)
+			}
+			if len(keys) > 0 {
+				e.compact["empty_keys"] = keys
+			}
+		}
+	}
+}
+
 func compactPaginatedObjectsPayload(payload map[string]any, opts compactOptions, base map[string]any) map[string]any {
 	rawData, _ := payload["data"].([]any)
 	objects := make([]map[string]any, 0, len(rawData))
@@ -1190,7 +1282,7 @@ func compactOptionSchemaProperties() map[string]any {
 		},
 		"include_properties": map[string]any{
 			"type":        "boolean",
-			"description": "Include simplified properties. Prefer property_keys when you know the exact properties. If property_keys is empty, only max_properties are included.",
+			"description": "Include simplified properties. Prefer property_keys when you know the exact properties. If property_keys is empty, only max_properties are included. empty_keys then names properties the object holds with no value (null, \"\", []): left out of properties, but shown by the app; objects-modify-property set null removes them.",
 			"default":     false,
 		},
 		"include_type": map[string]any{

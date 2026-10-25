@@ -968,3 +968,7 @@ blocks added, removed, or changed in text.
 ## List RPCs report success when one object succeeded
 
 `ObjectListModifyDetailValues` and `ObjectListSetDetails` (`detailservice.ModifyDetailsList` / `SetDetailsList`) return no error as soon as one object took the change; failures of the others are only logged at WARN level. `objects-modify-property` reads every object back from the index afterwards (heart indexes before the RPC returns) and reports `verified`, `mismatches` and `unverified`.
+
+## What REST leaves out of an object's properties
+
+Measured against heart 0.50.8 (REST API 2025-11-08): a key holding null is never listed; an empty list (`tag: []`) is not listed; an empty string depends on the format (`description: ""` is listed, `url: ""` is not); `false` is listed. The app's properties panel lists every key the object holds, so REST and the app disagree exactly on the empty ones. The compact read tools fill the gap with `empty_keys`, read over gRPC.
