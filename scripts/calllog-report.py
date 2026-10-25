@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Summarise the call log (ANYTYPE_CALL_LOG_DIR, one calls-YYYY-MM-DD.jsonl per day).
 
-    scripts/calllog-report.py DIR [--days N] [--client TEXT] [--tool NAME]
+    scripts/calllog-report.py DIR [--days N] [--client TEXT] [--tool NAME] [--chat HASH]
 
-Sections: who connected; per tool calls, failures, time and size; calls
-repeated with the same arguments (repeated writes are the ones that matter);
-export links handed out but never read; the most frequent errors; the
-slowest calls. Reads only the log, never Anytype.
+Sections: who connected; ChatGPT conversations (one tunnel process carries
+them all; the "chat" field tells them apart); per tool calls, failures, time
+and size; calls repeated with the same arguments (repeated writes are the
+ones that matter); export links handed out but never read; the most frequent
+errors; the slowest calls. Reads only the log, never Anytype.
 """
 
 import argparse
@@ -36,6 +37,15 @@ def load(directory, days):
                     e["_t"] = datetime.datetime.fromisoformat(e["ts"].replace("Z", "+00:00"))
                     entries.append(e)
     entries.sort(key=lambda e: e["_t"])
+    # A process learns its client at initialize; lines written before that
+    # (server/discover) belong to the same client.
+    client_of = {}
+    for e in entries:
+        if e.get("client"):
+            client_of.setdefault(e["proc"], e["client"])
+    for e in entries:
+        if not e.get("client") and e["proc"] in client_of:
+            e["client"] = client_of[e["proc"]]
     return entries
 
 
@@ -60,11 +70,14 @@ def main():
     ap.add_argument("--days", type=int, default=0, help="only the last N days")
     ap.add_argument("--client", default="", help="only clients whose name contains this")
     ap.add_argument("--tool", default="", help="only this tool")
+    ap.add_argument("--chat", default="", help="only the conversation whose hash starts with this")
     args = ap.parse_args()
 
     entries = load(args.dir, args.days)
     if args.client:
         entries = [e for e in entries if args.client in e.get("client", "")]
+    if args.chat:
+        entries = [e for e in entries if e.get("chat", "").startswith(args.chat)]
     if not entries:
         sys.exit("no log lines")
     calls = [e for e in entries if e["method"] == "tools/call" and (not args.tool or e.get("tool") == args.tool)]
@@ -74,11 +87,27 @@ def main():
     print("== Sessions")
     sessions = collections.defaultdict(lambda: {"procs": set(), "calls": 0})
     for e in entries:
-        key = (e.get("consumer", "?"), e.get("client", "?"))
+        key = (e.get("consumer", "?"), e.get("client", "(no initialize)"))
         sessions[key]["procs"].add(e["proc"])
         sessions[key]["calls"] += e["method"] == "tools/call"
     table([(f"{c} / {cl}", len(v["procs"]), v["calls"]) for (c, cl), v in sorted(sessions.items())],
           ("consumer / client", "sessions", "tool calls"))
+
+    print("\n== Chats")
+    chats = collections.defaultdict(list)
+    for e in entries:
+        if e.get("chat"):
+            chats[e["chat"]].append(e)
+    if chats:
+        rows = []
+        for chat, es in sorted(chats.items(), key=lambda kv: kv[1][0]["_t"]):
+            tools = collections.Counter(e.get("tool") for e in es if e["method"] == "tools/call")
+            writes = sum(1 for e in es if e.get("writes"))
+            rows.append((chat, es[0]["ts"][:19], es[-1]["ts"][11:19], sum(tools.values()), writes,
+                         ", ".join(f"{t} {n}" for t, n in tools.most_common(3))))
+        table(rows, ("chat", "first", "last", "tool calls", "writes", "most used"))
+    else:
+        print("none (only ChatGPT names its conversations, since v0.39)")
 
     print("\n== Tools")
     by_tool = collections.defaultdict(list)
@@ -98,7 +127,8 @@ def main():
     last, repeats = {}, collections.Counter()
     gaps = collections.defaultdict(list)
     for e in calls:
-        key = (e.get("tool"), e.get("args_hash"))
+        # The same call from two conversations is no repeat.
+        key = (e.get("chat") or e["proc"], e.get("tool"), e.get("args_hash"))
         prev = last.get(key)
         if prev and (e["_t"] - prev).total_seconds() <= REPEAT_WINDOW_S:
             repeats[(e.get("tool"), bool(e.get("writes")))] += 1

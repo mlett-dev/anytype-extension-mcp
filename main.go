@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.38.0"
+	serverVersion = "0.39.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -245,6 +245,11 @@ func (s *mcpServer) handleRequest(req rpcRequest) (rpcResponse, bool) {
 		}
 
 		s.lastRawParams = req.Params
+		// A write can change what a remembered render shows, also when the
+		// object's own blocks stay the same (rows of an embedded query).
+		if hints, ok := toolAnnotations[params.Name]; !ok || hints.kind != readOnly {
+			s.renders = nil
+		}
 		payload, err := s.callTool(params.Name, params.Arguments)
 		if err != nil {
 			return rpcResponse{

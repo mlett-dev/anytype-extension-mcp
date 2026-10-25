@@ -98,6 +98,34 @@ func TestCallLogRecordsShapeNotContent(t *testing.T) {
 	}
 }
 
+func TestCallLogTellsChatsApart(t *testing.T) {
+	dir := t.TempDir()
+	s := &mcpServer{cfg: serverConfig{outRoot: t.TempDir()}}
+	s.callLog = newCallLog(dir, "tunnel", 0, time.Now())
+
+	// The shape ChatGPT sends; made-up values.
+	meta := func(session string) string {
+		return `"_meta":{"openai/locale":"de-DE","openai/session":"` + session + `","openai/subject":"v1/xxxxsubject",` +
+			`"openai/userLocation":{"city":"Testort","latitude":12.34567}}`
+	}
+	runMessages(t, s,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"server-info","arguments":{},`+meta("v1/xxxxchat-one")+`}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"server-info","arguments":{},`+meta("v1/xxxxchat-two")+`}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"anytype-export://nothing/x.pdf",`+meta("v1/xxxxchat-one")+`}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"server-info","arguments":{}}}`,
+	)
+	raw, lines := readLogLines(t, dir)
+	for _, leaked := range []string{"xxxxchat", "xxxxsubject", "Testort", "12.34567", "de-DE", "openai/"} {
+		if strings.Contains(raw, leaked) {
+			t.Errorf("%q from _meta reached the log:\n%s", leaked, raw)
+		}
+	}
+	one, two, read, none := lines[0]["chat"], lines[1]["chat"], lines[2]["chat"], lines[3]["chat"]
+	if one != shortHash("v1/xxxxchat-one", 8) || two == nil || one == two || read != one || none != nil {
+		t.Errorf("chat fields = %v %v %v %v", one, two, read, none)
+	}
+}
+
 func TestCallLogLinksMatchLaterReads(t *testing.T) {
 	e := map[string]any{}
 	uri := "anytype-export://abc/render.jpg"

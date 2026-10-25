@@ -16,8 +16,8 @@ import time
 PROBE_PREFIX = "LIVETEST"
 
 
-def _require_env(name, what):
-    """Read a path from the environment, or explain what to set and why.
+def _require_env(name, what, example="/srv/anytype/shared"):
+    """Read a setting from the environment, or explain what to set and why.
 
     These used to carry the defaults of the machine they were written on, which
     is worse than having none: a wrong path fails deep inside a suite instead of
@@ -28,7 +28,7 @@ def _require_env(name, what):
         raise SystemExit(
             f"{name} is not set.\n"
             f"  It must point to {what}.\n"
-            f"  Example: export {name}=/srv/anytype/shared"
+            f"  Example: export {name}={example}"
         )
     return value
 
@@ -46,6 +46,17 @@ LAUNCHER = _require_env(
     "ANYTYPE_MCP_LAUNCHER",
     "the script that starts anytype-extension-mcp on stdio",
 )
+
+# The space the suites write into. No default: the first space of an instance
+# is usually a shared one, and the suites change its contents, homepage and
+# widgets for everyone in it while they run. Use a space only this account is
+# a member of; Suite refuses any other unless ANYTYPE_LIVETEST_SHARED_SPACE=1.
+SPACE_ID = _require_env(
+    "ANYTYPE_LIVETEST_SPACE_ID",
+    "the id of a space only this account is a member of (see list-spaces)",
+    example="bafyrei...",
+)
+SHARED_SPACE_OK = os.environ.get("ANYTYPE_LIVETEST_SHARED_SPACE", "") not in ("", "0", "false")
 
 # Where file-upload expects staged files. Defaults to SHARED_ROOT/in, which is
 # the layout the server itself assumes.
@@ -138,6 +149,27 @@ class Client:
         self.proc.terminate()
 
 
+_checked_spaces = set()
+
+
+def test_space(client):
+    """SPACE_ID, once it is known to be a space nobody else sees."""
+    if SPACE_ID in _checked_spaces:
+        return SPACE_ID
+    if SPACE_ID not in {s["id"] for s in client.call("list-spaces")["spaces"]}:
+        raise SystemExit("ANYTYPE_LIVETEST_SPACE_ID is not one of this account's spaces (list-spaces)")
+    members = client.call("list-members", space_id=SPACE_ID)["members"]
+    present = [m for m in members if m.get("status") in ("active", "joining")]
+    if len(present) > 1 and not SHARED_SPACE_OK:
+        raise SystemExit(
+            f"the test space has {len(present)} members, so others would see the test objects.\n"
+            "  Use a space only this account is a member of, or set\n"
+            "  ANYTYPE_LIVETEST_SHARED_SPACE=1 to run there anyway."
+        )
+    _checked_spaces.add(SPACE_ID)
+    return SPACE_ID
+
+
 class Suite:
     """Collects checks and the objects a suite created, for reporting and cleanup."""
 
@@ -146,7 +178,7 @@ class Suite:
         self.name = name
         self.checks = []
         self.created = []
-        self.space_id = client.call("list-spaces")["spaces"][0]["id"]
+        self.space_id = test_space(client)
 
     # --- assertions --------------------------------------------------------
 

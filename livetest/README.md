@@ -13,6 +13,7 @@ object is moved. A mock would have found none of them.
 ```bash
 export ANYTYPE_MCP_LAUNCHER=/path/to/launcher.sh
 export ANYTYPE_LIVETEST_SHARED_ROOT=/path/to/shared/files
+export ANYTYPE_LIVETEST_SPACE_ID=bafyrei...   # a space only this account is in
 
 python3 livetest/run.py            # all suites
 python3 livetest/run.py blocks     # matching suites only
@@ -30,16 +31,23 @@ or you are testing the previous state.
 |---|---|---|
 | `ANYTYPE_MCP_LAUNCHER` | yes | Script that starts `anytype-extension-mcp` on stdio |
 | `ANYTYPE_LIVETEST_SHARED_ROOT` | yes | Host path of the directory shared with the Anytype server (mounted there as `/data`) |
+| `ANYTYPE_LIVETEST_SPACE_ID` | yes | The space the suites write into; see below |
+| `ANYTYPE_LIVETEST_SHARED_SPACE` | no | `1` allows a space with other members |
 | `ANYTYPE_LIVETEST_IN_ROOT` | no | Staging directory; defaults to `$ANYTYPE_LIVETEST_SHARED_ROOT/in` |
 | `ANYTYPE_LIVETEST_KEEP` | no | `1` archives but does not delete — useful for inspecting a failed run |
 
-The two required variables have no defaults on purpose. A default carries the
+The required variables have no defaults on purpose. A default carries the
 layout of whatever machine it was written on, and a wrong path fails deep inside
 a suite rather than at startup.
 
 ## What the tests do to your data
 
-They write into the **first space** of the instance. Everything they create is
+They write into the space `ANYTYPE_LIVETEST_SPACE_ID` names. Use one only this
+account is a member of: the suites change its contents, homepage and widgets
+while they run, and every member would see that. The harness refuses a space
+with other members unless `ANYTYPE_LIVETEST_SHARED_SPACE=1`. The space needs the
+library type Task (in the GUI: add it from the type library); a space
+created bare, without a use case, has only system types. Everything they create is
 named `LIVETEST …`, archived at the end and then **permanently deleted**, so the
 bin does not grow with every run.
 

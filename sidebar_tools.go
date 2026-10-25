@@ -120,7 +120,7 @@ func (s *mcpServer) sidebarToolDefs() []any {
 				"space_id": spaceIDProp(),
 				"widgets": map[string]any{
 					"type":        "array",
-					"description": "Wanted widgets, in the order wanted.",
+					"description": "Wanted widgets, in the order wanted. Empty with remove_missing=true: no widgets.",
 					"items": map[string]any{
 						"type":                 "object",
 						"required":             []string{"target_id"},
@@ -640,9 +640,11 @@ func (s *mcpServer) toolSidebarSnapshot(args map[string]any) (map[string]any, er
 }
 
 func (s *mcpServer) toolSidebarApply(args map[string]any) (map[string]any, error) {
+	// An empty list with remove_missing empties the sidebar: that is what a
+	// snapshot of an empty sidebar restores to.
 	raw, ok := args["widgets"].([]any)
-	if !ok || len(raw) == 0 {
-		return nil, fmt.Errorf("widgets is required and must be a list")
+	if !ok || (len(raw) == 0 && !optionalBool(args, "remove_missing", false)) {
+		return nil, fmt.Errorf("widgets is required and must be a list; an empty list needs remove_missing=true and empties the sidebar")
 	}
 	wanted := make([]anytypefiles.AddWidgetSpec, 0, len(raw))
 	for i, item := range raw {

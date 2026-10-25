@@ -34,6 +34,9 @@ const (
 	// while the object's blocks are unchanged: render, fix, render again is
 	// the normal loop and must never return the old picture.
 	renderReuseWindow = 90 * time.Second
+
+	// The renderer's cap for all_rows (anytype-render ROW_CAP).
+	renderRowCap = 500
 )
 
 type renderMemo struct {
@@ -46,9 +49,11 @@ func (s *mcpServer) renderToolDefs() []any {
 	return []any{map[string]any{
 		"name": "object-render",
 		"description": "Render an object as the Anytype GUI shows it, with the real Anytype frontend: an image link plus a layout report " +
-			"(table column widths, wrapped and clipped cells; per query or collection view its columns, cut-off cells and rows shown of the total; " +
-			"text cut off at the side, images that failed to load; complete:false when the image does not reach the end of the object). " +
-			"The report holds what the image shows in numbers; read it first. Opening the object sets its last-opened date, nothing else is written.",
+			"(table column widths, wrapped and clipped cells, px cut off at the side; per query or collection view its source, view name, " +
+			"filter and sort counts, columns, cut-off cells and rows shown of the total; text cut off at the side, images that failed to load; " +
+			"complete, and why not). The report holds what the image shows in numbers; read it first. " +
+			"An embedded view has its own view settings and shows its first rows (10 by default) above a Load more button. " +
+			"Opening the object sets its last-opened date, nothing else is written.",
 		"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 			"space_id":  spaceIDProp(),
 			"object_id": strProp("Object to render: a page, a query, a collection or any other layout."),
@@ -59,6 +64,8 @@ func (s *mcpServer) renderToolDefs() []any {
 			"theme":          enumProp("Defaults to light.", []string{"light", "dark"}),
 			"expand_toggles": map[string]any{"type": "boolean", "description": "Show every toggle and toggle heading open. Defaults to false, as a page first opens.", "default": false},
 			"full_height":    map[string]any{"type": "boolean", "description": "Capture the whole object instead of the first screen. Defaults to true.", "default": true},
+			"all_rows":       map[string]any{"type": "boolean", "description": fmt.Sprintf("Press Load more in embedded views until every row shows, up to %d per view. Defaults to false.", renderRowCap), "default": false},
+			"image":          map[string]any{"type": "boolean", "description": "false returns the layout report only, without an image. Defaults to true.", "default": true},
 			"format":         enumProp("Defaults to jpeg; png is sharper for small text and larger.", []string{"jpeg", "png"}),
 		}),
 	}}
@@ -122,12 +129,14 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	}
 	expand := optionalBool(args, "expand_toggles", false)
 	fullHeight := optionalBool(args, "full_height", true)
+	allRows := optionalBool(args, "all_rows", false)
+	wantImage := optionalBool(args, "image", true)
 
 	fingerprint, toggles, err := s.renderInputs(spaceID, objectID)
 	if err != nil {
 		return nativeToolResult{}, err
 	}
-	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%s", spaceID, objectID, width, theme, format, expand, fullHeight, fingerprint)
+	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, fingerprint)
 	now := time.Now()
 	if memo, ok := s.recentRender(key, now); ok {
 		s.note("reused", "render")
@@ -142,44 +151,51 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	rendered, err := s.callRenderer(map[string]any{
 		"space_id": spaceID, "object_id": objectID, "width": width, "theme": theme,
 		"format": format, "full_height": fullHeight, "expand_ids": expandIDs,
+		"all_rows": allRows, "image": wantImage,
 	})
 	if err != nil {
 		return nativeToolResult{}, err
 	}
 	s.note("render_ms", rendered.Ms)
-	image, err := base64.StdEncoding.DecodeString(rendered.Image)
-	if err != nil || len(image) == 0 {
-		return nativeToolResult{}, errors.New("the renderer returned no image")
-	}
-	if len(image) > maxExportBytes {
-		return nativeToolResult{}, fmt.Errorf("the image is %d bytes, above the %d-byte export limit; use format jpeg, a smaller width or full_height false", len(image), maxExportBytes)
-	}
-
-	ext := "jpg"
-	if format == "png" {
-		ext = "png"
-	}
-	short := objectID
-	if len(short) > 16 {
-		short = short[len(short)-16:]
-	}
-	exported, err := s.exportBytes(objectID, fmt.Sprintf("render-%s-%dpx-%s.%s", short, width, theme, ext), image, now)
-	if err != nil {
-		return nativeToolResult{}, err
-	}
 
 	out := map[string]any{
 		"space_id": spaceID, "object_id": objectID,
 		"width_px": rendered.Width, "height_px": rendered.Height, "theme": rendered.Theme,
 		"layout":   compactLayout(rendered.Layout),
 		"renderer": strings.TrimSpace("anytype-ts " + rendered.Renderer.Frontend),
-		"uri":      exported.Metadata["uri"], "expires_at": exported.Metadata["expires_at"],
+	}
+	var content []map[string]any
+	if wantImage {
+		image, err := base64.StdEncoding.DecodeString(rendered.Image)
+		if err != nil || len(image) == 0 {
+			return nativeToolResult{}, errors.New("the renderer returned no image")
+		}
+		if len(image) > maxExportBytes {
+			return nativeToolResult{}, fmt.Errorf("the image is %d bytes, above the %d-byte export limit; use format jpeg, a smaller width or full_height false", len(image), maxExportBytes)
+		}
+		ext := "jpg"
+		if format == "png" {
+			ext = "png"
+		}
+		short := objectID
+		if len(short) > 16 {
+			short = short[len(short)-16:]
+		}
+		exported, err := s.exportBytes(objectID, fmt.Sprintf("render-%s-%dpx-%s.%s", short, width, theme, ext), image, now)
+		if err != nil {
+			return nativeToolResult{}, err
+		}
+		out["uri"], out["expires_at"] = exported.Metadata["uri"], exported.Metadata["expires_at"]
+		content = exported.Content
 	}
 	if rendered.Truncated {
 		out["truncated"] = true
 	}
-	if rendered.Complete != nil && !*rendered.Complete {
-		out["complete"] = false
+	if rendered.Complete != nil {
+		out["complete"] = *rendered.Complete
+		if !*rendered.Complete {
+			out["incomplete_reason"] = incompleteReason(rendered.Truncated, fullHeight)
+		}
 	}
 	var warnings []string
 	if len(rendered.RPC.Refused) > 0 {
@@ -188,15 +204,46 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	if len(rendered.Unsettled) > 0 {
 		warnings = append(warnings, "captured while still loading ("+strings.Join(rendered.Unsettled, ", ")+"), so parts may be missing or not yet in place")
 	}
+	if n := partlyShownViews(rendered.Layout); !allRows && fullHeight && n > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d embedded views show only their first rows; all_rows loads the rest", n))
+	}
 	if closed, _ := rendered.Layout["toggles_not_open"].([]any); expand && len(closed) > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d of %d toggles did not open, so their content is not in the image", len(closed), len(toggles)))
 	}
 	if len(warnings) > 0 {
 		out["warnings"] = warnings
 	}
-	result := nativeToolResult{Metadata: out, Content: exported.Content}
+	result := nativeToolResult{Metadata: out, Content: content}
 	s.rememberRender(key, now, result)
 	return result, nil
+}
+
+// incompleteReason says why the image stops above the end of the object.
+func incompleteReason(truncated, fullHeight bool) string {
+	switch {
+	case truncated:
+		return "the object is taller than the renderer's height limit; the image stops there"
+	case !fullHeight:
+		return "full_height is false: the image shows the first screen only"
+	default:
+		return "the content continues below the image"
+	}
+}
+
+// partlyShownViews counts embedded views that hold more rows than they show.
+// The object's own view ("dataview") loads up to 500 rows without a button.
+func partlyShownViews(layout map[string]any) int {
+	views, _ := layout["dataviews"].([]any)
+	n := 0
+	for _, v := range views {
+		dv, _ := v.(map[string]any)
+		shown, _ := dv["rows_shown"].(float64)
+		total, ok := dv["rows_total"].(float64)
+		if ok && dv["block_id"] != "dataview" && shown < total {
+			n++
+		}
+	}
+	return n
 }
 
 // compactLayout keeps what a model can act on and drops what is empty.

@@ -9,6 +9,12 @@ package main
 // texts or results. Error messages are kept, with Anytype ids replaced by
 // their hash, because "why did it fail" is what the log is read for most.
 //
+// A process serves one client connection, but one connection can carry many
+// conversations: the ChatGPT tunnel sends every chat through the same process.
+// ChatGPT names the chat in each request's _meta ("openai/session", an
+// anonymized conversation id); its hash is the "chat" field. Nothing else from
+// _meta is read: it also holds the user's location.
+//
 // Each client connection runs its own server process, and they share one
 // directory: one file per UTC day, appended (O_APPEND) in single writes of
 // whole lines, never rotated by renaming. Days past the retention are deleted
@@ -159,6 +165,9 @@ func (l *callLog) record(req rpcRequest, resp rpcResponse, sent bool, size int, 
 	if l.consumer != "" {
 		e["consumer"] = l.consumer
 	}
+	if chat := chatID(req.Params); chat != "" {
+		e["chat"] = chat
+	}
 
 	switch req.Method {
 	case "initialize":
@@ -284,6 +293,19 @@ func scrubError(msg string) string {
 		msg = string([]rune(msg)[:callLogErrorMaxRune]) + "…"
 	}
 	return msg
+}
+
+// chatID is the hash of the conversation id ChatGPT puts in _meta, or "".
+func chatID(params json.RawMessage) string {
+	var envelope struct {
+		Meta struct {
+			Session string `json:"openai/session"`
+		} `json:"_meta"`
+	}
+	if len(params) == 0 || json.Unmarshal(params, &envelope) != nil || envelope.Meta.Session == "" {
+		return ""
+	}
+	return shortHash(envelope.Meta.Session, 8)
 }
 
 func shortHash(s string, n int) string {

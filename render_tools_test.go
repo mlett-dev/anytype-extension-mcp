@@ -125,8 +125,8 @@ func TestObjectRenderExportsImageAndReport(t *testing.T) {
 	if _, ok := res.Metadata["warnings"]; ok {
 		t.Errorf("warnings without a refused call: %v", res.Metadata["warnings"])
 	}
-	if _, ok := res.Metadata["complete"]; ok {
-		t.Errorf("complete is only reported when false: %v", res.Metadata)
+	if res.Metadata["complete"] != true || res.Metadata["incomplete_reason"] != nil {
+		t.Errorf("complete = %v, reason = %v; want true and no reason", res.Metadata["complete"], res.Metadata["incomplete_reason"])
 	}
 
 	// ChatGPT's repeat of the same call is answered without a second render.
@@ -207,8 +207,8 @@ func TestObjectRenderFlagsWhatIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Metadata["complete"] != false {
-		t.Errorf("complete = %v, want false", res.Metadata["complete"])
+	if res.Metadata["complete"] != false || !strings.Contains(res.Metadata["incomplete_reason"].(string), "continues below") {
+		t.Errorf("complete = %v, reason = %v", res.Metadata["complete"], res.Metadata["incomplete_reason"])
 	}
 	warnings := strings.Join(res.Metadata["warnings"].([]string), " | ")
 	for _, want := range []string{"still loading (images)", "1 of 1 toggles did not open"} {
@@ -239,5 +239,71 @@ func TestObjectRenderOlderDaemonWithoutCompleteness(t *testing.T) {
 	}
 	if _, ok := res.Metadata["complete"]; ok {
 		t.Errorf("complete invented for a daemon that does not measure it: %v", res.Metadata)
+	}
+}
+
+func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
+	reply := renderReply()
+	reply["image"] = ""
+	reply["complete"] = false
+	reply["layout"].(map[string]any)["dataviews"] = []any{
+		map[string]any{"block_id": "dv1", "kind": "query", "rows_shown": 10, "rows_total": 63},
+		map[string]any{"block_id": "dataview", "kind": "query", "rows_shown": 30, "rows_total": 30},
+	}
+	daemon, calls, last := fakeRenderer(t, http.StatusOK, reply)
+	server, _ := renderTestServer(t, daemon.URL)
+
+	res, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "image": false, "full_height": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (*last)["image"] != false || (*last)["all_rows"] != false {
+		t.Errorf("request = %v", *last)
+	}
+	if len(res.Content) != 0 || res.Metadata["uri"] != nil {
+		t.Errorf("report only, yet content = %v, uri = %v", res.Content, res.Metadata["uri"])
+	}
+	if !strings.Contains(res.Metadata["incomplete_reason"].(string), "first screen") {
+		t.Errorf("reason = %v", res.Metadata["incomplete_reason"])
+	}
+	// The first screen does not show every row anyway: no hint about all_rows.
+	if w, _ := res.Metadata["warnings"].([]string); strings.Contains(strings.Join(w, " "), "all_rows") {
+		t.Errorf("all_rows hint on a first-screen render: %v", w)
+	}
+
+	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "image": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := res.Metadata["warnings"].([]string); !strings.Contains(strings.Join(w, " "), "1 embedded views show only their first rows") {
+		t.Errorf("warnings = %v, want the all_rows hint for dv1 only", w)
+	}
+	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "image": false, "all_rows": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (*last)["all_rows"] != true || *calls != 3 {
+		t.Errorf("all_rows not passed on, or answered from memory: %v, calls=%d", *last, *calls)
+	}
+	if w, _ := res.Metadata["warnings"].([]string); strings.Contains(strings.Join(w, " "), "all_rows") {
+		t.Errorf("all_rows hint although all_rows was set: %v", w)
+	}
+}
+
+func TestObjectRenderForgetsRendersAfterAWrite(t *testing.T) {
+	daemon, calls, _ := fakeRenderer(t, http.StatusOK, renderReply())
+	server, _ := renderTestServer(t, daemon.URL)
+	render := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"object-render","arguments":{"space_id":"s","object_id":"o"}}}`
+	read := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"file-list-output","arguments":{}}}`
+	// Fails for want of arguments, but a write was attempted: rows of an
+	// embedded query may have changed although the page's blocks did not.
+	write := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"update-object-compact","arguments":{}}}`
+	runMessages(t, server, render, read, render)
+	if *calls != 1 {
+		t.Fatalf("a read between two renders made the second render again, calls=%d", *calls)
+	}
+	runMessages(t, server, write, render)
+	if *calls != 2 {
+		t.Errorf("a render after a write came from memory, calls=%d", *calls)
 	}
 }

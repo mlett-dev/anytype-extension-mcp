@@ -168,15 +168,21 @@ size, ok or the error message (Anytype ids in it hashed), hashes of the
 export links handed out and of the URIs read back, and notes such as a reused
 render or export. Argument values, texts and results are never written.
 
+One process can serve many conversations: the ChatGPT tunnel sends every chat
+through a single one. ChatGPT names the conversation in each request's
+`_meta` (`openai/session`, an anonymized id); its hash is the `chat` field.
+No other `_meta` value is read, since it also carries the user's location.
+
 Several server processes can share the directory: lines are appended whole,
 files are never renamed, days past the retention are deleted at start, and a
 day stops at 64 MiB after one marker line. A log that cannot be written
 switches itself off instead of failing a call.
 
-`scripts/calllog-report.py DIR [--days N] [--client TEXT] [--tool NAME]`
-summarises it: sessions per client, calls, failures, p50/p95 time and size per
-tool, calls repeated with the same arguments within 120 s (split into reads
-and writes), export links never read, the most frequent errors and the slowest
+`scripts/calllog-report.py DIR [--days N] [--client TEXT] [--tool NAME] [--chat HASH]`
+summarises it: sessions per client, ChatGPT conversations with their calls and
+writes, calls, failures, p50/p95 time and size per tool, calls repeated with
+the same arguments within 120 s in one conversation (split into reads and
+writes), export links never read, the most frequent errors and the slowest
 calls.
 
 ### Session token
@@ -367,23 +373,33 @@ JPEG or PNG, plus a layout report measured in the rendered page:
 
 - the layout (`edit`, `set`, `collection`, …), the content width and the
   content height (`content_height_px`: where the last visible element ends);
-- per table block the rendered column widths, whether it is wider than the
-  page (`cut_off`), how many cells wrap, and which cells clip (row, column);
+- per table block the rendered column widths, how many pixels are hidden at
+  the side when it is wider than the page (`cut_off_px`), how many cells wrap,
+  and which cells clip (row, column);
 - per query or collection view (`dataviews`, embedded or the object itself)
-  its kind and view type, the rows shown in the image and the rows in total,
-  and for a grid the columns with their widths, `cut_off`, and the cells whose
-  text is cut off (row and column name) — or, with "wrap content" on, how many
-  cells wrap;
+  its kind and view type, what it shows (for an embedded view the query or
+  collection it points at, `source_id` and `source_name`, and for a query the
+  types it lists, `query_of`), the active view's name with its filter and sort
+  counts, the rows shown in the image and the rows in total, and for a grid
+  the columns with their widths, `cut_off_px`, and the cells whose text is cut
+  off (row and column name) — or, with "wrap content" on, how many cells wrap;
 - text blocks cut off at the side, and images that failed or were still
   loading, by block id.
 
-`complete: false` says the image stops above the end of the object (the first
-screen with `full_height: false`, or a page past the 16000 px limit, which
-also sets `truncated`). Warnings say when the picture was taken while
-network, fonts or images were still loading, and when `expand_toggles` left
-toggles closed. The report is the more reliable channel: it states in numbers
-what the image shows, and it arrives even when a client does not fetch the
-link.
+`complete` says whether the image reaches the end of the object;
+`incomplete_reason` says why not (the first screen with `full_height: false`,
+or a page past the 16000 px limit, which also sets `truncated`). Warnings say
+when the picture was taken while network, fonts, images or rows were still
+loading, when `expand_toggles` left toggles closed, and when embedded views
+hold more rows than they show. The report is the more reliable channel: it
+states in numbers what the image shows, and it arrives even when a client does
+not fetch the link; `image: false` returns the report alone.
+
+An embedded view is not the query it points at opened on its own: it keeps
+views of its own, with their own filters and sorts, and shows the first rows
+(the view's page limit, 10 by default) above a "Load more" button.
+`all_rows: true` presses that button until every row shows, up to 500 per
+view, as a user scrolling through it would.
 
 The rendering is not done here. This server forwards the request to a separate
 daemon at `ANYTYPE_RENDER_URL` —
@@ -405,7 +421,9 @@ there (as in every tool, heart's "tree does not exist" and "space not exists"
 come with a plain "object not found in this space" or "space not found" in
 front), and a hash of the blocks lets a repeated identical call within 90 s
 return the first result (ChatGPT sends calls twice) without ever answering an
-edited object with the old picture. `expand_toggles` opens every toggle and
+edited object with the old picture. Any writing tool call clears these
+remembered results, since a write can change what a page shows without
+changing its blocks (the rows of an embedded query). `expand_toggles` opens every toggle and
 toggle heading; opening the object sets its last-opened date, nothing else is
 written.
 
@@ -497,11 +515,15 @@ A mock would have found none of them.
 ```bash
 export ANYTYPE_MCP_LAUNCHER=/path/to/launcher.sh
 export ANYTYPE_LIVETEST_SHARED_ROOT=/path/to/shared/files
+export ANYTYPE_LIVETEST_SPACE_ID=bafyrei...   # a space only this account is in
 python3 livetest/run.py            # all suites
 python3 livetest/run.py blocks     # matching suites only
 ```
 
-The suites write into the **first space** of the instance. Everything they
+The suites write into the space `ANYTYPE_LIVETEST_SPACE_ID` names and refuse
+one with other members, who would see the test objects, homepage and widget
+changes while a run lasts (`ANYTYPE_LIVETEST_SHARED_SPACE=1` overrides). The
+space needs the library type Task. Everything they
 create is named `LIVETEST …`, archived at the end and then permanently deleted.
 Only IDs the run created itself are deleted; leftovers found by name prefix are
 archived but never deleted, because a matching name is not proof that an object

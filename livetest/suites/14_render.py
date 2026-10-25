@@ -49,15 +49,37 @@ def run(s):
             opened.get("height_px", 0) > res.get("height_px", 0), (opened.get("height_px"), res.get("height_px")))
     s.check("every toggle opened, the nested one too", "warnings" not in opened, opened.get("warnings"))
     s.check("a full-height render holds the whole object",
-            "complete" not in opened and opened["layout"]["content_height_px"] <= opened["height_px"], opened)
+            opened.get("complete") is True and "incomplete_reason" not in opened
+            and opened["layout"]["content_height_px"] <= opened["height_px"], opened)
 
     long_page = s.page("render lang")
     s.c.call("block-paste", space_id=s.space_id, object_id=long_page,
              markdown="\n\n".join(f"Absatz {i}, damit die Seite länger als ein Bildschirm wird." for i in range(40)))
     s.settle(2)
     first = s.c.call("object-render", space_id=s.space_id, object_id=long_page, full_height=False, width=480)
-    s.check("the first screen of a long object says it is not all of it",
-            first.get("complete") is False and first["layout"]["content_height_px"] > first["height_px"], first)
+    s.check("the first screen of a long object says it is not all of it, and why",
+            first.get("complete") is False and "first screen" in first.get("incomplete_reason", "")
+            and first["layout"]["content_height_px"] > first["height_px"], first)
+
+    # Embedded, a collection of 12 shows its first 10 rows above Load more.
+    items = [s.page(f"render eintrag {i}") for i in range(12)]
+    coll = s.c.call("object-to-collection", space_id=s.space_id, object_id=s.page("render sammlung"))["object_id"]
+    s.c.call("add-list-objects", space_id=s.space_id, list_id=coll, objects=items)
+    host = s.page("render eingebettet")
+    s.c.call("block-embed-query", space_id=s.space_id, object_id=host, query_object_id=coll)
+    s.settle(2)
+    some = s.c.call("object-render", space_id=s.space_id, object_id=host, image=False)
+    views = (some.get("layout") or {}).get("dataviews") or [{}]
+    s.check("an embedded collection names what it shows: source and view",
+            views[0].get("source_id") == coll and views[0].get("view_name") and isinstance(views[0].get("filters"), int), views)
+    s.check("it shows the first rows of 12 and says all_rows loads the rest",
+            views[0].get("rows_total") == 12 and views[0].get("rows_shown", 12) < 12
+            and any("all_rows" in w for w in some.get("warnings", [])), (views, some.get("warnings")))
+    s.check("image false returns the report without an image", "uri" not in some, some.get("uri"))
+    every = s.c.call("object-render", space_id=s.space_id, object_id=host, all_rows=True)
+    rows = ((every.get("layout") or {}).get("dataviews") or [{}])[0]
+    s.check("all_rows shows every row", rows.get("rows_shown") == 12 and "warnings" not in every,
+            (rows, every.get("warnings")))
 
     dark = s.c.call("object-render", space_id=s.space_id, object_id=obj, theme="dark", width=800, format="png")
     s.check("theme, width and format are applied",
