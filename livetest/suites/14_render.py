@@ -81,6 +81,18 @@ def run(s):
     s.check("all_rows shows every row", rows.get("rows_shown") == 12 and "warnings" not in every,
             (rows, every.get("warnings")))
 
+    # Another view, as a click on its tab shows it, without saving the switch.
+    s.c.call("query-view-create", space_id=s.space_id, object_id=host, name="Liste", layout="list")
+    before = s.c.call("query-inspect", space_id=s.space_id, object_id=host).get("active_view")
+    listed = s.c.call("object-render", space_id=s.space_id, object_id=host, image=False, views=[{"view": "Liste"}])
+    dv = ((listed.get("layout") or {}).get("dataviews") or [{}])[0]
+    s.check("views shows another view, and the report lists the views there are",
+            dv.get("view") == "list" and dv.get("view_name") == "Liste" and "Liste" in (dv.get("views") or []), dv)
+    s.check("showing another view saves nothing",
+            s.c.call("query-inspect", space_id=s.space_id, object_id=host).get("active_view") == before, before)
+    status, msg = s.c.try_call("object-render", space_id=s.space_id, object_id=host, views=[{"view": "gibt es nicht"}])
+    s.check("an unknown view is an error that names the views there are", status == "err" and "Liste" in msg, msg)
+
     dark = s.c.call("object-render", space_id=s.space_id, object_id=obj, theme="dark", width=800, format="png")
     s.check("theme, width and format are applied",
             dark.get("theme") == "dark" and dark.get("width_px") == 800 and str(dark.get("uri", "")).endswith(".png"), dark)

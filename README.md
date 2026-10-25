@@ -380,7 +380,7 @@ JPEG or PNG, plus a layout report measured in the rendered page:
   its kind and view type, what it shows (for an embedded view the query or
   collection it points at, `source_id` and `source_name`, and for a query the
   types it lists, `query_of`), the active view's name with its filter and sort
-  counts, the rows shown in the image and the rows in total, and for a grid
+  counts, the names of all its views when it has several (`views`), the rows shown in the image and the rows in total, and for a grid
   the columns with their widths, `cut_off_px`, and the cells whose text is cut
   off (row and column name) — or, with "wrap content" on, how many cells wrap;
 - text blocks cut off at the side, and images that failed or were still
@@ -400,6 +400,13 @@ views of its own, with their own filters and sorts, and shows the first rows
 (the view's page limit, 10 by default) above a "Load more" button.
 `all_rows: true` presses that button until every row shows, up to 500 per
 view, as a user scrolling through it would.
+
+`views` shows other views than the active ones: per query or collection block
+(`block_id` as the report names it, `dataview` for the object's own; it may be
+left out when the object shows only one) a view name or id. The renderer
+switches it as a click on the view tab does, in its own browser only: the
+active view, which heart keeps per device and does not sync, stays as it was.
+A name that does not exist is an error listing the views there are.
 
 The rendering is not done here. This server forwards the request to a separate
 daemon at `ANYTYPE_RENDER_URL` —

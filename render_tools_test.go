@@ -307,3 +307,32 @@ func TestObjectRenderForgetsRendersAfterAWrite(t *testing.T) {
 		t.Errorf("a render after a write came from memory, calls=%d", *calls)
 	}
 }
+
+func TestObjectRenderPassesViews(t *testing.T) {
+	daemon, calls, last := fakeRenderer(t, http.StatusOK, renderReply())
+	server, _ := renderTestServer(t, daemon.URL)
+
+	args := map[string]any{"space_id": "s", "object_id": "o", "views": []any{
+		map[string]any{"block_id": "dv1", "view": " Kalender "},
+		map[string]any{"view": "v2"},
+	}}
+	if _, err := server.toolObjectRender(args); err != nil {
+		t.Fatal(err)
+	}
+	sent, _ := (*last)["views"].([]any)
+	if len(sent) != 2 || sent[0].(map[string]any)["view"] != "Kalender" || sent[0].(map[string]any)["block_id"] != "dv1" || sent[1].(map[string]any)["block_id"] != "" {
+		t.Errorf("views sent = %v", (*last)["views"])
+	}
+	// Another view is another picture, not a repeat.
+	if _, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o"}); err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 2 {
+		t.Errorf("a render with other views was answered from memory, calls=%d", *calls)
+	}
+	for _, bad := range []any{"Kalender", []any{"Kalender"}, []any{map[string]any{"block_id": "dv1"}}} {
+		if _, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "views": bad}); err == nil {
+			t.Errorf("views %v accepted", bad)
+		}
+	}
+}

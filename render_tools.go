@@ -50,7 +50,7 @@ func (s *mcpServer) renderToolDefs() []any {
 		"name": "object-render",
 		"description": "Render an object as the Anytype GUI shows it, with the real Anytype frontend: an image link plus a layout report " +
 			"(table column widths, wrapped and clipped cells, px cut off at the side; per query or collection view its source, view name, " +
-			"filter and sort counts, columns, cut-off cells and rows shown of the total; text cut off at the side, images that failed to load; " +
+			"other views, filter and sort counts, columns, cut-off cells and rows shown of the total; text cut off at the side, images that failed to load; " +
 			"complete, and why not). The report holds what the image shows in numbers; read it first. " +
 			"An embedded view has its own view settings and shows its first rows (10 by default) above a Load more button. " +
 			"Opening the object sets its last-opened date, nothing else is written.",
@@ -66,7 +66,20 @@ func (s *mcpServer) renderToolDefs() []any {
 			"full_height":    map[string]any{"type": "boolean", "description": "Capture the whole object instead of the first screen. Defaults to true.", "default": true},
 			"all_rows":       map[string]any{"type": "boolean", "description": fmt.Sprintf("Press Load more in embedded views until every row shows, up to %d per view. Defaults to false.", renderRowCap), "default": false},
 			"image":          map[string]any{"type": "boolean", "description": "false returns the layout report only, without an image. Defaults to true.", "default": true},
-			"format":         enumProp("Defaults to jpeg; png is sharper for small text and larger.", []string{"jpeg", "png"}),
+			"views": map[string]any{
+				"type": "array",
+				"description": "Show other views than the active ones, as a click on the view tab does, without saving the switch. " +
+					"block_id of the query or collection as the report names it (\"dataview\" for the object's own); it may be left out when the object shows only one.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"block_id": strProp("Block of the query or collection."),
+						"view":     strProp("View name or id."),
+					},
+					"required": []string{"view"},
+				},
+			},
+			"format": enumProp("Defaults to jpeg; png is sharper for small text and larger.", []string{"jpeg", "png"}),
 		}),
 	}}
 }
@@ -131,12 +144,17 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	fullHeight := optionalBool(args, "full_height", true)
 	allRows := optionalBool(args, "all_rows", false)
 	wantImage := optionalBool(args, "image", true)
+	views, err := renderViews(args)
+	if err != nil {
+		return nativeToolResult{}, err
+	}
 
 	fingerprint, toggles, err := s.renderInputs(spaceID, objectID)
 	if err != nil {
 		return nativeToolResult{}, err
 	}
-	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, fingerprint)
+	viewsKey, _ := json.Marshal(views)
+	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%s|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, viewsKey, fingerprint)
 	now := time.Now()
 	if memo, ok := s.recentRender(key, now); ok {
 		s.note("reused", "render")
@@ -151,7 +169,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	rendered, err := s.callRenderer(map[string]any{
 		"space_id": spaceID, "object_id": objectID, "width": width, "theme": theme,
 		"format": format, "full_height": fullHeight, "expand_ids": expandIDs,
-		"all_rows": allRows, "image": wantImage,
+		"all_rows": allRows, "image": wantImage, "views": views,
 	})
 	if err != nil {
 		return nativeToolResult{}, err
@@ -216,6 +234,36 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	result := nativeToolResult{Metadata: out, Content: content}
 	s.rememberRender(key, now, result)
 	return result, nil
+}
+
+// renderViews reads the views argument: which view to show per query or
+// collection block. The renderer resolves names and block ids, since it sees
+// what the page shows.
+func renderViews(args map[string]any) ([]map[string]string, error) {
+	raw, present := args["views"]
+	if !present || raw == nil {
+		return []map[string]string{}, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, errors.New("views must be a list of {block_id, view}")
+	}
+	if len(list) > 50 {
+		return nil, errors.New("views takes at most 50 entries")
+	}
+	out := make([]map[string]string, 0, len(list))
+	for i, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("views[%d] must be an object with view and, if the object shows several queries or collections, block_id", i)
+		}
+		view := strings.TrimSpace(optionalString(entry, "view"))
+		if view == "" {
+			return nil, fmt.Errorf("views[%d].view is required: a view name or id", i)
+		}
+		out = append(out, map[string]string{"block_id": strings.TrimSpace(optionalString(entry, "block_id")), "view": view})
+	}
+	return out, nil
 }
 
 // incompleteReason says why the image stops above the end of the object.
