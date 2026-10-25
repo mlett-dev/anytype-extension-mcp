@@ -121,6 +121,9 @@ def run(s):
     dv = ((bar.get("layout") or {}).get("dataviews") or [{}])[0]
     s.check("show_filters opens the filter bar, and the report counts only the applied filter",
             dv.get("filter_bar") is True and dv.get("filters") == 1 and dv.get("filters_inactive") == 1, dv)
+    listed = dv.get("filter_list") or []
+    s.check("filter_list names both filters as the GUI does and marks the empty one",
+            len(listed) == 2 and listed[0] == 'Name: Contains "eintrag"' and "[filters nothing" in listed[1], listed)
 
     dark = s.c.call("object-render", space_id=s.space_id, object_id=obj, theme="dark", width=800, format="png")
     s.check("theme, width and format are applied",

@@ -52,7 +52,7 @@ func (s *mcpServer) renderToolDefs() []any {
 		"name": "object-render",
 		"description": "Render an object as the Anytype GUI shows it, with the real Anytype frontend: an image link plus a layout report " +
 			"(table column widths, wrapped and clipped cells, px cut off at the side; per query or collection view its source, view name, " +
-			"other views, applied filters (and stored ones that filter nothing) and sorts, columns with cut-off cells and the width they need, rows shown of the total; " +
+			"other views, applied filters (and stored ones that filter nothing or that the GUI ignores) and sorts, both also in words as the GUI labels them (filter_list, sort_list), columns with cut-off cells and the width they need, rows shown of the total; " +
 			"text cut off at the side, images that failed to load). complete is true only when nothing is hidden: below the image, " +
 			"behind Load more, in closed toggles or past the side (cell text cut short with an ellipsis does not count); " +
 			"incomplete_reasons says what is and how to show it. " +

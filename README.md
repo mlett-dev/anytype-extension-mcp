@@ -410,7 +410,11 @@ JPEG or PNG, plus a layout report measured in the rendered page:
   collection it points at, `source_id` and `source_name`, and for a query the
   types it lists, `query_of`), the active view's name, the filters the GUI
   applies (`filters`; stored ones without a value, which filter nothing, as
-  `filters_inactive`) and the sorts, `filter_bar` when the filter bar is open, the names of all its views when it has several (`views`), the rows
+  `filters_inactive`; ones on a deleted property, which the GUI drops, as
+  `filters_ignored`) and the sorts, every filter and sort in words as the GUI
+  labels it (`filter_list`, `sort_list`, groups with their rules, notes on
+  what filters nothing, is ignored or names a deleted value), `filter_bar`
+  when the filter bar is open, the names of all its views when it has several (`views`), the rows
   shown in the image, loaded and in total, `in_image: false` when the view
   lies outside the picture, and for a grid the columns with their widths,
   `cut_off_px`, and per column the cells whose text is cut short with the
