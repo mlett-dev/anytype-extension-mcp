@@ -316,7 +316,7 @@ func allRestToolDefs() []any {
 		// --- tags ---------------------------------------------------------
 		map[string]any{
 			"name":        "list-tags",
-			"description": "List the tag options of a select/multi_select property. Query filters and object updates reference tags by id, so fetch them here first. Returns id, key, name and color unless full=true.",
+			"description": "List the tag options of a select/multi_select property. The tools that write or filter tags take a tag id, key or name; a name two options share needs the id from here. Returns id, key, name and color unless full=true.",
 			"inputSchema": restSchema([]string{"space_id", "property_id"}, map[string]any{
 				"space_id":    spaceIDProp(),
 				"property_id": strProp("Property ID (bafyrei... from list-properties) of a select/multi_select property. The property key is NOT accepted here."),

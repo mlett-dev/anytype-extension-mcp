@@ -140,13 +140,13 @@ func (s *mcpServer) spaceOpsToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "schema-set-order",
-			"description": "Fix the order things appear in: either the object types of a space, or the options of one select/multi-select property. Pass the ids in the order you want them.",
+			"description": "Fix the order things appear in: either the object types of a space, or the options of one select/multi-select property. Pass them in the order you want them.",
 			"inputSchema": restSchema([]string{"space_id", "kind", "ids"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"kind":     enumProp("What to order: the space's types, or the tag options of one property.", []string{"types", "tags"}),
 				"ids": map[string]any{
 					"type":        "array",
-					"description": "For kind=types: type ids from list-types-compact. For kind=tags: tag ids from list-tags.",
+					"description": "For kind=types: type ids from list-types-compact. For kind=tags: tag ids, keys or names.",
 					"items":       map[string]any{"type": "string"},
 				},
 				"property_key": strProp("For kind=tags: the property whose options are being ordered, e.g. \"tag\". " + relationKeySpellingNote),
@@ -553,7 +553,7 @@ func (s *mcpServer) toolSchemaSetOrder(args map[string]any) (map[string]any, err
 		if err != nil {
 			return nil, fmt.Errorf("kind=tags needs property_key: %w", err)
 		}
-		if err := client.SetTagOrder(ctx, spaceID, propertyKey, ids); err != nil {
+		if ids, err = client.SetTagOrder(ctx, spaceID, propertyKey, ids); err != nil {
 			return nil, err
 		}
 	default:

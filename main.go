@@ -17,13 +17,13 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.44.0"
+	serverVersion = "0.45.0"
 	protoVersion  = "2025-11-25"
 )
 
 const iconPayloadDescription = "The object's icon. Two shapes are accepted: an emoji, {\"format\":\"emoji\",\"emoji\":\"🍰\"}; an uploaded image, {\"format\":\"file\",\"file\":\"<image object id from file-upload>\"}, which is how a custom picture becomes an icon. A built-in symbol ({\"format\":\"icon\",...}) is refused on objects; only types take one. null, or a shape with an empty value, removes the icon. The icon is a small square next to the title — for the wide banner above it use object-set-cover instead."
 
-const propertyLinkValueDescription = "Property updates must use the typed Anytype property-link shape. Every item needs key plus exactly one typed value field: text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects. Do not send {key, value:null}; Anytype cannot infer the value type from null. Use objects for relation/object links, files for file attachments, [] to clear object/file/multi-select links, and an empty string/false only for formats that accept that type."
+const propertyLinkValueDescription = "Property updates must use the typed Anytype property-link shape. Every item needs key plus exactly one typed value field: text, number, select, multi_select, date, files, checkbox, url, email, phone, or objects. Do not send {key, value:null}; Anytype cannot infer the value type from null. select and multi_select take tag ids, keys or names. Use objects for relation/object links, files for file attachments, [] to clear object/file/multi-select links, and an empty string/false only for formats that accept that type."
 
 const searchFilesDescription = "Without types, file objects (types file, image, video, audio; PDFs are file) are searched too and listed after the other results. "
 

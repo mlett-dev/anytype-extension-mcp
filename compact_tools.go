@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
 
 func (s *mcpServer) toolListObjectsCompact(args map[string]any) (map[string]any, error) {
@@ -207,8 +209,13 @@ func (s *mcpServer) toolObjectsCreateCompactMany(args map[string]any) (map[strin
 	okCount := 0
 	errorCount := 0
 
+	tags := s.newLinkTagResolver(spaceID)
+	defer tags.close()
 	for i, item := range itemMaps {
 		body, err := createObjectRequestBody(item)
+		if err == nil {
+			err = tags.resolveBodyTags(body)
+		}
 		if err != nil {
 			results = append(results, map[string]any{
 				"index": i,
@@ -303,6 +310,11 @@ func (s *mcpServer) toolObjectUpdateCompact(args map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
+	tags := s.newLinkTagResolver(spaceID)
+	defer tags.close()
+	if err := tags.resolveBodyTags(body); err != nil {
+		return nil, err
+	}
 	obj, iconOK, iconNote, err := s.patchObject(spaceID, objectID, args, body)
 	if err != nil {
 		return nil, err
@@ -342,6 +354,8 @@ func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[strin
 	okCount := 0
 	errorCount := 0
 
+	tags := s.newLinkTagResolver(spaceID)
+	defer tags.close()
 	for i, item := range itemMaps {
 		objectID, err := requiredString(item, "object_id")
 		if err != nil {
@@ -357,6 +371,9 @@ func (s *mcpServer) toolObjectsUpdateCompactMany(args map[string]any) (map[strin
 		}
 
 		body, err := updateObjectRequestBody(item)
+		if err == nil {
+			err = tags.resolveBodyTags(body)
+		}
 		if err != nil {
 			results = append(results, map[string]any{
 				"index":     i,
@@ -1236,11 +1253,11 @@ func propertyLinkValueSchema() map[string]any {
 			},
 			"select": map[string]any{
 				"type":        "string",
-				"description": "Select tag key or ID.",
+				"description": "Tag id, key or name.",
 			},
 			"multi_select": map[string]any{
 				"type":        "array",
-				"description": "Select tag keys or IDs. Use [] to clear.",
+				"description": "Tag ids, keys or names. Use [] to clear.",
 				"items":       map[string]any{"type": "string"},
 				"uniqueItems": false,
 			},
@@ -1764,5 +1781,132 @@ func validatePropertyLinks(raw any) error {
 				label, len(present), strings.Join(present, ", "), present[0])
 		}
 	}
+	return nil
+}
+
+// linkTagResolver turns the tag names and keys in the property links of one
+// call into option ids before REST sees them. REST takes a tag id or key but
+// refuses a name ("invalid select option"), while objects-modify-property and
+// the query filters take all three; models reach for the name first.
+//
+// It connects on first need: a call whose tag values are all ids, or that has
+// none, never touches gRPC. When gRPC cannot be reached the links go to REST
+// unchanged, which refuses whatever is no tag of the property, so nothing
+// invalid can be stored that way.
+type linkTagResolver struct {
+	s        *mcpServer
+	spaceID  string
+	client   *anytypefiles.Client
+	resolver *anytypefiles.TagResolver
+	failed   bool
+}
+
+func (s *mcpServer) newLinkTagResolver(spaceID string) *linkTagResolver {
+	return &linkTagResolver{s: s, spaceID: spaceID}
+}
+
+func (l *linkTagResolver) close() {
+	if l.client != nil {
+		l.client.Close()
+	}
+}
+
+func (l *linkTagResolver) connect() bool {
+	if l.resolver != nil || l.failed {
+		return l.resolver != nil
+	}
+	client, err := l.s.grpcClient()
+	if err == nil {
+		l.client = client
+		l.resolver, err = client.NewTagResolver(context.Background(), l.spaceID)
+	}
+	l.failed = err != nil
+	return !l.failed
+}
+
+// needsResolving is true for a value that may be a name or a key; ids and
+// empty values pass untouched.
+func needsResolving(v string) bool {
+	return strings.TrimSpace(v) != "" && !strings.HasPrefix(v, "bafy")
+}
+
+// resolve answers the property links with select and multi_select values
+// resolved, leaving the caller's maps alone. Every other field, and the shape
+// of each value, stays as sent.
+func (l *linkTagResolver) resolve(raw any) (any, error) {
+	entries, ok := raw.([]any)
+	if !ok {
+		return raw, nil
+	}
+	var out []any
+	for i, element := range entries {
+		entry, ok := element.(map[string]any)
+		if !ok {
+			continue
+		}
+		key := stringValue(entry["key"])
+		var values []string
+		single, isSingle := entry["select"].(string)
+		list, isList := entry["multi_select"].([]any)
+		switch {
+		case isSingle && needsResolving(single):
+			values = []string{single}
+		case isList:
+			pending := false
+			for _, item := range list {
+				s, ok := item.(string)
+				if !ok {
+					pending = false
+					break
+				}
+				values = append(values, s)
+				pending = pending || needsResolving(s)
+			}
+			if !pending {
+				values = nil
+			}
+		}
+		if len(values) == 0 || key == "" || !l.connect() {
+			continue
+		}
+		resolved, err := l.resolver.Resolve(key, values)
+		if err != nil {
+			return nil, fmt.Errorf("properties[%d]: %w", i, err)
+		}
+		changed := make(map[string]any, len(entry))
+		for k, v := range entry {
+			changed[k] = v
+		}
+		if isSingle {
+			changed["select"] = resolved[0]
+		} else {
+			ids := make([]any, len(resolved))
+			for j, id := range resolved {
+				ids[j] = id
+			}
+			changed["multi_select"] = ids
+		}
+		if out == nil {
+			out = append([]any(nil), entries...)
+		}
+		out[i] = changed
+	}
+	if out == nil {
+		return raw, nil
+	}
+	return out, nil
+}
+
+// resolveBodyTags resolves the tag values of a request body's properties.
+func (l *linkTagResolver) resolveBodyTags(body map[string]any) error {
+	props, ok := body["properties"]
+	if !ok {
+		return nil
+	}
+	resolved, err := l.resolve(props)
+	if err != nil {
+		return err
+	}
+	body["properties"] = resolved
 	return nil
 }

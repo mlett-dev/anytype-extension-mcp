@@ -119,3 +119,88 @@ func TestResolveTagOperation(t *testing.T) {
 		}
 	}
 }
+
+func TestTagMatchesOrder(t *testing.T) {
+	opts := []tagOption{
+		{id: "bafya", name: "done", key: "finished"},
+		{id: "bafyb", name: "Fertig", key: "done"},
+		{id: "bafyc", name: "Twice", key: "twice_a"},
+		{id: "bafyd", name: "twice", key: "twice_b"},
+	}
+	cases := []struct {
+		value string
+		want  []string
+	}{
+		{"bafya", []string{"bafya"}},
+		// An exact key wins over a name, so a key REST took keeps its tag.
+		{"done", []string{"bafyb"}},
+		{"fertig", []string{"bafyb"}},
+		{"Twice", []string{"bafyc", "bafyd"}},
+		{"Twice_A", []string{"bafyc"}},
+		{"nothing", nil},
+	}
+	for _, c := range cases {
+		var got []string
+		for _, h := range tagMatches(opts, c.value) {
+			got = append(got, h.id)
+		}
+		if strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%q: got %v, want %v", c.value, got, c.want)
+		}
+	}
+}
+
+func TestTagResolver(t *testing.T) {
+	r := &TagResolver{prep: &filterPrep{
+		keys: &relationKeyMap{
+			formats:  map[string]model.RelationFormat{"6a00": model.RelationFormat_status, "description": model.RelationFormat_longtext},
+			internal: map[string]bool{"6a00": true, "description": true},
+			byAPIKey: map[string]string{"task_status": "6a00"},
+			keyByID:  map[string]string{"bafyprop": "6a00"},
+		},
+		options: map[string][]tagOption{"6a00": {{id: "bafydone", name: "Done", key: "done"}, {id: "bafyx", name: "Same", key: "s1"}, {id: "bafyy", name: "same", key: "s2"}}},
+	}}
+	for _, c := range []struct{ key, value, want string }{
+		{"task_status", "Done", "bafydone"},
+		{"bafyprop", "Done", "bafydone"},
+		{"6a00", "done", "bafydone"},
+		{"task_status", "Unknown", "Unknown"}, // REST refuses it with its own error
+		{"unknown_prop", "Done", "Done"},      // REST answers unknown property
+		{"description", "Done", "Done"},       // not a tag property
+		{"task_status", "bafyother", "bafyother"},
+	} {
+		got, err := r.Resolve(c.key, []string{c.value})
+		if err != nil || got[0] != c.want {
+			t.Errorf("%s=%q: got %v %v, want %q", c.key, c.value, got, err, c.want)
+		}
+	}
+	if _, err := r.Resolve("task_status", []string{"SAME"}); err == nil || !strings.Contains(err.Error(), "2 tags named") {
+		t.Errorf("an ambiguous name must be refused, got %v", err)
+	}
+}
+
+func TestObjectOperationCheck(t *testing.T) {
+	prep := &filterPrep{keys: &relationKeyMap{formats: map[string]model.RelationFormat{
+		"6a90": model.RelationFormat_object, "featuredRelations": model.RelationFormat_object, "6a91": model.RelationFormat_file,
+	}}}
+	for _, c := range []struct {
+		name string
+		key  string
+		op   DetailOperation
+		ok   bool
+	}{
+		{"object id", "6a90", DetailOperation{Set: []any{"bafyobj"}, HasSet: true}, true},
+		{"derived id", "6a90", DetailOperation{Add: "_participant_abc", HasAdd: true}, true},
+		{"cleared", "6a90", DetailOperation{Set: []any{}, HasSet: true}, true},
+		{"a name", "6a90", DetailOperation{Set: "Ein Projekt", HasSet: true}, false},
+		{"a name added", "6a91", DetailOperation{Add: []any{"bafyfile", "rechnung.pdf"}, HasAdd: true}, false},
+		{"remove is left alone", "6a90", DetailOperation{Remove: "whatever", HasRemove: true}, true},
+		{"system relation holds keys", "featuredRelations", DetailOperation{Set: []any{"description", "type"}, HasSet: true}, true},
+	} {
+		op := c.op
+		err := prep.resolveTagOperation(c.key, &op)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: err %v, want ok=%v", c.name, err, c.ok)
+		}
+	}
+}

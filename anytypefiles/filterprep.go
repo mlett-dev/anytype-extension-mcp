@@ -387,6 +387,38 @@ func (p *filterPrep) tagOptions(key string) ([]tagOption, error) {
 	return opts, nil
 }
 
+// tagMatches finds the options a value names: its id, else its exact key, else
+// its name in any case, else its key in another spelling (Done_Soon for
+// done_soon). The exact key comes before the name so that every key REST takes
+// keeps naming the tag it named there.
+func tagMatches(opts []tagOption, v string) []tagOption {
+	for _, o := range opts {
+		if o.id == v {
+			return []tagOption{o}
+		}
+	}
+	for _, o := range opts {
+		if o.key != "" && o.key == v {
+			return []tagOption{o}
+		}
+	}
+	var hits []tagOption
+	for _, o := range opts {
+		if strings.EqualFold(o.name, v) {
+			hits = append(hits, o)
+		}
+	}
+	if len(hits) > 0 {
+		return hits
+	}
+	for _, o := range opts {
+		if o.key != "" && normalizeKey(o.key) == normalizeKey(v) {
+			hits = append(hits, o)
+		}
+	}
+	return hits
+}
+
 // resolveTags turns tag names or keys into ids, among the options of that one
 // property. heart stores whatever string it gets, and a name instead of an id
 // silently matches nothing — the app even shows such a filter as "empty".
@@ -411,27 +443,7 @@ func (p *filterPrep) resolveTags(key string, values []any, keep map[string]bool)
 			continue
 		}
 		v := strings.TrimSpace(raw.(string))
-		var hits []tagOption
-		for _, o := range opts {
-			if o.id == v {
-				hits = []tagOption{o}
-				break
-			}
-		}
-		if len(hits) == 0 {
-			for _, o := range opts {
-				if strings.EqualFold(o.name, v) {
-					hits = append(hits, o)
-				}
-			}
-		}
-		if len(hits) == 0 {
-			for _, o := range opts {
-				if o.key != "" && normalizeKey(o.key) == normalizeKey(v) {
-					hits = append(hits, o)
-				}
-			}
-		}
+		hits := tagMatches(opts, v)
 		switch len(hits) {
 		case 1:
 			out = append(out, hits[0].id)

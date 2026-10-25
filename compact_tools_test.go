@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestCompactPropertiesMatchesKeyIDAndName(t *testing.T) {
 	raw := []any{
@@ -206,5 +210,53 @@ func TestCreateObjectRequestBodyRejectsValuelessProperty(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected a property without a typed value field to be refused")
+	}
+}
+
+func TestLinkTagResolverLeavesIdsAlone(t *testing.T) {
+	// s is nil: any attempt to connect would panic, so this also proves that
+	// ids, empty values and other formats never reach gRPC.
+	l := &linkTagResolver{}
+	in := []any{
+		map[string]any{"key": "task_status", "select": "bafydone"},
+		map[string]any{"key": "tag", "multi_select": []any{"bafya", "bafyb"}},
+		map[string]any{"key": "tag", "multi_select": []any{}},
+		map[string]any{"key": "task_status", "select": ""},
+		map[string]any{"key": "description", "text": "Done"},
+	}
+	out, err := l.resolve(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Errorf("changed: %v", out)
+	}
+}
+
+func TestLinkTagResolverFailsOpen(t *testing.T) {
+	l := &linkTagResolver{failed: true}
+	in := []any{map[string]any{"key": "task_status", "select": "Done"}}
+	out, err := l.resolve(in)
+	if err != nil || !reflect.DeepEqual(out, in) {
+		t.Errorf("without gRPC the links must go to REST as sent, got %v %v", out, err)
+	}
+}
+
+func TestResolveKeepTags(t *testing.T) {
+	opts := []tagOption{{ID: "bafya", Name: "Done", Key: "done"}, {ID: "bafyb", Name: "Open", Key: "open"}}
+	keep, err := resolveKeepTags(opts, []string{"bafya", "open"})
+	if err != nil || !keep["bafya"] || !keep["bafyb"] {
+		t.Errorf("id and key: %v %v", keep, err)
+	}
+	keep, err = resolveKeepTags(opts, []string{"done"})
+	if err != nil || !keep["bafya"] {
+		t.Errorf("key: %v %v", keep, err)
+	}
+	keep, err = resolveKeepTags(opts, []string{"OPEN"})
+	if err != nil || !keep["bafyb"] {
+		t.Errorf("name: %v %v", keep, err)
+	}
+	if _, err := resolveKeepTags(opts, []string{"Gibtsnicht"}); err == nil || !strings.Contains(err.Error(), "Done, Open") {
+		t.Errorf("an unknown entry must be refused, got %v", err)
 	}
 }

@@ -254,11 +254,30 @@ def run(s):
         linked not in json.dumps(own_cleared["object"].get("properties")),
         json.dumps(own_cleared["object"].get("properties"))[:200],
     )
+    # An object property took a name just as a select took a tag key: heart
+    # stored it, the app showed a link to nothing, the read-back agreed.
+    status, msg = s.c.try_call(
+        "objects-modify-property", space_id=s.space_id, object_ids=[targets[0]],
+        operations=[{"property_key": own_prop["key"], "set": ["Ein Projektname"]}],
+    )
+    s.check("an object property refuses a name instead of an id", status == "err" and "object ids" in msg, msg)
     # A tag key or name sent as a select value was stored as that string: the
     # app showed the property empty, REST still read it as the tag (its cache
     # is keyed by tag key too), and the read-back confirmed what it was sent.
     # Names and keys are now resolved to option ids before the write, so the
     # read-back passing means the id is what heart holds.
+    def raw_holds(oid, want_ids):
+        """The raw details hold exactly these tag ids under some key."""
+        details = json.loads(s.c.call(
+            "object-export", space_id=s.space_id, object_id=oid, format="json",
+        )["content"])["snapshot"]["data"]["details"]
+        want = sorted(want_ids)
+        for v in details.values():
+            got = sorted(v) if isinstance(v, list) else [v]
+            if got == want:
+                return True
+        return False
+
     suffix = str(int(time.time()))
     for fmt in ("select", "multi_select"):
         prop = s.c.call(
@@ -316,6 +335,64 @@ def run(s):
                 removed.get("updated") is True and done["id"] not in text and opts["Offen"]["id"] in text,
                 text[:200],
             )
+
+        # The REST object tools took a tag id or key but refused a name, the
+        # spelling models reach for first; the names are now resolved first.
+        offen = opts["Offen"]
+        def link(key, *names):
+            return {"key": key, "select": names[0]} if fmt == "select" else {"key": key, "multi_select": list(names)}
+        upd = s.c.call(
+            "update-object-compact", space_id=s.space_id, object_id=targets[2],
+            properties=[link(prop["key"], "Fertig")],
+        )
+        s.check(f"{fmt}: update-object-compact takes a tag name and stores the id",
+                upd.get("updated") is not False and raw_holds(targets[2], [done["id"]]), upd)
+        s.c.call(
+            "update-object-compact", space_id=s.space_id, object_id=targets[2],
+            properties=[link(prop["id"], "offen")],
+        )
+        s.check(f"{fmt}: also when the link names the property by id", raw_holds(targets[2], [offen["id"]]))
+        status, msg = s.c.try_call(
+            "update-object-compact", space_id=s.space_id, object_id=targets[2],
+            properties=[link(prop["key"], "Gibtesnicht")],
+        )
+        s.check(f"{fmt}: an unknown tag name is refused and nothing is stored",
+                status == "err" and raw_holds(targets[2], [offen["id"]]), msg)
+        many = s.c.call(
+            "update-objects-compact-many", space_id=s.space_id,
+            items=[{"object_id": targets[2], "properties": [link(prop["key"], done["key"])]}],
+        )
+        s.check(f"{fmt}: update-objects-compact-many still takes a tag key",
+                many.get("ok_count") == 1 and raw_holds(targets[2], [done["id"]]), many)
+        names = ("Offen",) if fmt == "select" else ("Offen", "fertig")
+        created = s.c.call(
+            "create-objects-compact-many", space_id=s.space_id,
+            items=[{"type_key": "page", "name": s.probe(f"angelegt-{fmt}"), "properties": [link(prop["key"], *names)]}],
+        )
+        new_id = (created.get("objects") or [{}])[0].get("object_id")
+        s.track(new_id)
+        want = [offen["id"]] if fmt == "select" else [offen["id"], done["id"]]
+        s.check(f"{fmt}: create-objects-compact-many takes tag names", bool(new_id) and raw_holds(new_id, want), created)
+
+        if fmt == "select":
+            ordered = s.c.call(
+                "schema-set-order", space_id=s.space_id, kind="tags",
+                property_key=prop["key"], ids=["Fertig", offen["key"]],
+            )
+            listed = s.c.call("list-tags", space_id=s.space_id, property_id=prop["id"])
+            listed = [t["id"] for t in (listed.get("tags") or listed.get("data") or [])]
+            s.check("schema-set-order takes tag names and keys and answers the ids",
+                    ordered.get("ids") == [done["id"], offen["id"]] and listed[:2] == [done["id"], offen["id"]],
+                    {"answer": ordered.get("ids"), "listed": listed})
+            plan = s.c.call(
+                "clean-unused-tags", space_id=s.space_id, property_id=prop["id"], keep_tag_ids=["Offen"],
+            )
+            s.check("clean-unused-tags takes a tag name to keep", plan.get("dry_run") is True, plan)
+            status, msg = s.c.try_call(
+                "clean-unused-tags", space_id=s.space_id, property_id=prop["id"], keep_tag_ids=["Gibtesnicht"],
+            )
+            s.check("and refuses one that matches no option, since it would protect nothing",
+                    status == "err" and "Offen" in msg, msg)
 
     # The translation must not become stricter than anytype itself: a bundled
     # relation exists in every space even when the space index holds no object

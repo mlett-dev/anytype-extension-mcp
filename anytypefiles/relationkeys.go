@@ -82,6 +82,9 @@ type relationKeyMap struct {
 	// property there. resolve deliberately ignores it — a dataview filter needs
 	// the relation key, and an id in that position is a mistake worth catching.
 	ids map[string]bool
+	// keyByID maps a property's object id to its internal key, for the REST
+	// tools, whose property links may name a property by id.
+	keyByID map[string]string
 	// names is used to make error messages helpful.
 	names map[string]string
 	// formats records each property's format, which decides what a view can do
@@ -126,6 +129,7 @@ func (c *Client) loadRelationKeys(ctx context.Context, spaceID string) (*relatio
 		byInternal: make(map[string]string, len(records)),
 		internal:   make(map[string]bool, len(records)),
 		ids:        make(map[string]bool, len(records)),
+		keyByID:    make(map[string]string, len(records)),
 		names:      make(map[string]string, len(records)),
 		formats:    make(map[string]model.RelationFormat, len(records)),
 		hidden:     map[string]bool{},
@@ -141,6 +145,7 @@ func (c *Client) loadRelationKeys(ctx context.Context, spaceID string) (*relatio
 		}
 		if id, _ := fromProtoValue(structField(record, "id")).(string); id != "" {
 			out.ids[id] = true
+			out.keyByID[id] = key
 		}
 		if name, ok := fromProtoValue(structField(record, "name")).(string); ok {
 			out.names[key] = name

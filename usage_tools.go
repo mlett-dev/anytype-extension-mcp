@@ -72,7 +72,7 @@ func (s *mcpServer) usageToolDefs() []any {
 				"confirm": map[string]any{"type": "boolean", "description": "Must be true, together with dry_run=false, to actually remove anything. Set it only after the user has seen and approved the list.", "default": false},
 				"keep_tag_ids": map[string]any{
 					"type":        "array",
-					"description": "Options to keep even though nothing references them.",
+					"description": "Options to keep even though nothing references them: ids, keys or names. One that matches no option is refused.",
 					"items":       map[string]any{"type": "string"},
 				},
 				"limit": map[string]any{"type": "integer", "description": "Refuse to remove more than this many options in one go, as a brake against a surprise. Defaults to 200.", "default": 200},
@@ -109,6 +109,7 @@ type tagOption struct {
 	ID    string
 	Name  string
 	Color string
+	Key   string
 }
 
 // propertyFacts is everything the analysis needs about the property itself.
@@ -171,6 +172,7 @@ func (s *mcpServer) loadTagOptions(spaceID, propertyID string) ([]tagOption, err
 			}
 			out = append(out, tagOption{
 				ID: asString(item["id"]), Name: asString(item["name"]), Color: asString(item["color"]),
+				Key: asString(item["key"]),
 			})
 		}
 		pagination, _ := payload["pagination"].(map[string]any)
@@ -384,13 +386,17 @@ func (s *mcpServer) toolCleanUnusedTags(args map[string]any) (map[string]any, er
 	}
 	confirmed, _ := args["confirm"].(bool)
 	limit := optionalInt(args, "limit", 200)
-	keep := make(map[string]bool)
-	for _, id := range optionalStringSlice(args, "keep_tag_ids") {
-		keep[id] = true
-	}
 
 	facts, reports, scannedObjects, scannedViews, err := s.analyse(
 		spaceID, propertyID, optionalStringSlice(args, "type_keys"))
+	if err != nil {
+		return nil, err
+	}
+	options := make([]tagOption, 0, len(reports))
+	for _, report := range reports {
+		options = append(options, report.Option)
+	}
+	keep, err := resolveKeepTags(options, optionalStringSlice(args, "keep_tag_ids"))
 	if err != nil {
 		return nil, err
 	}
@@ -685,4 +691,57 @@ func (s *mcpServer) listSchema(spaceID, kind string) ([]schemaEntry, error) {
 		offset += len(data)
 	}
 	return out, nil
+}
+
+// resolveKeepTags turns keep_tag_ids into option ids. It takes an id, key or
+// name, like the tools that write tags, and refuses what matches no option:
+// an entry that matched nothing would leave the option it meant unprotected,
+// and the run would archive it.
+func resolveKeepTags(options []tagOption, values []string) (map[string]bool, error) {
+	keep := make(map[string]bool, len(values))
+	for _, raw := range values {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		var hits []tagOption
+		for _, o := range options {
+			if o.ID == v || (o.Key != "" && o.Key == v) {
+				hits = []tagOption{o}
+				break
+			}
+		}
+		if len(hits) == 0 {
+			for _, o := range options {
+				if strings.EqualFold(o.Name, v) {
+					hits = append(hits, o)
+				}
+			}
+		}
+		if len(hits) == 0 {
+			norm := func(s string) string { return strings.ToLower(strings.ReplaceAll(s, "_", "")) }
+			for _, o := range options {
+				if o.Key != "" && norm(o.Key) == norm(v) {
+					hits = append(hits, o)
+				}
+			}
+		}
+		switch len(hits) {
+		case 1:
+			keep[hits[0].ID] = true
+		case 0:
+			names := make([]string, 0, len(options))
+			for _, o := range options {
+				names = append(names, o.Name)
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("keep_tag_ids: %q is no option of this property, so it would protect nothing; its options are: %s", v, strings.Join(names, ", "))
+		default:
+			// Keeping every option of that name is the safe reading.
+			for _, h := range hits {
+				keep[h.ID] = true
+			}
+		}
+	}
+	return keep, nil
 }

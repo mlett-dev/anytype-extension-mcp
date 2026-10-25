@@ -423,19 +423,41 @@ func (c *Client) SetTypeOrder(ctx context.Context, spaceID string, typeIDs []str
 }
 
 // SetTagOrder fixes the order the options of one select/multi-select property
-// appear in.
-func (c *Client) SetTagOrder(ctx context.Context, spaceID, propertyKey string, tagIDs []string) error {
+// appear in, and answers the option ids it ordered.
+func (c *Client) SetTagOrder(ctx context.Context, spaceID, propertyKey string, tagIDs []string) ([]string, error) {
 	if strings.TrimSpace(propertyKey) == "" {
-		return errors.New("property_key is required")
+		return nil, errors.New("property_key is required")
 	}
 	if len(tagIDs) == 0 {
-		return errors.New("tag_ids is required")
+		return nil, errors.New("tag_ids is required")
 	}
 	// RelationOptionSetOrder looks the property up by its internal key; the REST
 	// spelling orders the options of nothing at all.
-	propertyKey, err := c.resolvePropertyKey(ctx, spaceID, propertyKey)
+	keys, err := c.loadRelationKeys(ctx, spaceID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if propertyKey, err = keys.resolve(propertyKey); err != nil {
+		return nil, err
+	}
+	// The options are named the way the other tools take them: id, key or
+	// name. Ids pass as they are, as before.
+	prep := &filterPrep{c: c, ctx: ctx, spaceID: spaceID, keys: keys, options: map[string][]tagOption{}}
+	values := make([]any, len(tagIDs))
+	keep := map[string]bool{}
+	for i, id := range tagIDs {
+		values[i] = id
+		if strings.HasPrefix(id, "bafy") {
+			keep[id] = true
+		}
+	}
+	resolved, err := prep.resolveTags(propertyKey, values, keep)
+	if err != nil {
+		return nil, err
+	}
+	tagIDs = make([]string, len(resolved))
+	for i, v := range resolved {
+		tagIDs[i] = v.(string)
 	}
 	callCtx, cancel := c.contextWithAuth(ctx)
 	defer cancel()
@@ -443,12 +465,12 @@ func (c *Client) SetTagOrder(ctx context.Context, spaceID, propertyKey string, t
 		SpaceId: spaceID, RelationKey: propertyKey, RelationOptionOrder: tagIDs,
 	})
 	if err != nil {
-		return fmt.Errorf("gRPC RelationOptionSetOrder failed: %w", err)
+		return nil, fmt.Errorf("gRPC RelationOptionSetOrder failed: %w", err)
 	}
 	if resp.Error != nil && resp.Error.Code != pb.RpcRelationOptionSetOrderResponseError_NULL {
-		return fmt.Errorf("RelationOptionSetOrder error (%s): %s", resp.Error.Code, resp.Error.Description)
+		return nil, fmt.Errorf("RelationOptionSetOrder error (%s): %s", resp.Error.Code, resp.Error.Description)
 	}
-	return nil
+	return tagIDs, nil
 }
 
 // CopyBlocksAsMarkdown renders selected blocks the way copying them in the GUI

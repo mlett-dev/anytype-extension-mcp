@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anyproto/anytype-heart/core/domain"
 	"github.com/anyproto/anytype-heart/pb"
+	"github.com/anyproto/anytype-heart/pkg/lib/bundle"
 	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
 	"github.com/gogo/protobuf/types"
 )
@@ -565,6 +567,13 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 // through when they are ids; taking them off does no harm.
 func (p *filterPrep) resolveTagOperation(key string, op *DetailOperation) error {
 	format, known := p.format(key)
+	// System relations of these formats hold relation keys and markers such as
+	// lastOpened (featuredRelations, spaceDashboardId), so only the others are
+	// checked.
+	if known && (format == model.RelationFormat_object || format == model.RelationFormat_file) &&
+		!bundle.IsSystemRelation(domain.RelationKey(key)) {
+		return p.checkObjectOperation(key, op)
+	}
 	if !known || (format != model.RelationFormat_tag && format != model.RelationFormat_status) {
 		return nil
 	}
@@ -620,6 +629,36 @@ func (p *filterPrep) resolveTagOperation(key string, op *DetailOperation) error 
 		if op.Remove, err = resolve(op.Remove, true); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// checkObjectOperation refuses an object or file property value that is no
+// id. heart stores an object name as readily as a tag key, the app shows a
+// link to nothing, and the read-back confirms the name it was sent. Object ids
+// start with bafy; the ids heart derives (participants, dates, type keys)
+// start with an underscore. remove is left alone: taking off what is not
+// there does no harm.
+func (p *filterPrep) checkObjectOperation(key string, op *DetailOperation) error {
+	check := func(v any) error {
+		for _, item := range asList(v) {
+			s, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("%s takes object ids, not %v", p.keys.describe(key), item)
+			}
+			if s != "" && !strings.HasPrefix(s, "bafy") && !strings.HasPrefix(s, "_") {
+				return fmt.Errorf("%s takes object ids (bafy..., from a search), not %q; a name is stored as it is and links to nothing", p.keys.describe(key), s)
+			}
+		}
+		return nil
+	}
+	if op.HasSet {
+		if err := check(op.Set); err != nil {
+			return err
+		}
+	}
+	if op.HasAdd {
+		return check(op.Add)
 	}
 	return nil
 }
