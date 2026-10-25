@@ -54,7 +54,8 @@ func (s *mcpServer) renderToolDefs() []any {
 			"(table column widths, wrapped and clipped cells, px cut off at the side; per query or collection view its source, view name, " +
 			"other views, filter and sort counts, columns with cut-off cells and the width they need, rows shown of the total; " +
 			"text cut off at the side, images that failed to load). complete is true only when nothing is hidden: below the image, " +
-			"behind Load more, in closed toggles or past the side; incomplete_reasons says what is and how to show it. " +
+			"behind Load more, in closed toggles or past the side (cell text cut short with an ellipsis does not count); " +
+			"incomplete_reasons says what is and how to show it. " +
 			"The report holds what the image shows in numbers; read it first. " +
 			"An embedded view has its own views, and only their filters apply; it shows its first rows (10 by default) above a Load more button. " +
 			"Opening the object sets its last-opened date, nothing else is written.",
@@ -283,7 +284,9 @@ func hiddenContent(r renderResponse, blocks []anytypefiles.BlockInfo, fullHeight
 		}
 	}
 
-	var behind, capped, unloaded int
+	// Rows a view has but did not load. A "Load more" button is the GUI's
+	// sign that more can be shown; past 500 per view all_rows stops.
+	var behind, capped, slow, other int
 	views, _ := r.Layout["dataviews"].([]any)
 	for _, v := range views {
 		dv, _ := v.(map[string]any)
@@ -293,23 +296,29 @@ func hiddenContent(r renderResponse, blocks []anytypefiles.BlockInfo, fullHeight
 			continue
 		}
 		missing := int(total - loaded)
+		button, _ := dv["load_more"].(bool)
 		switch {
-		case dv["block_id"] != "dataview" && !allRows:
+		case button && !allRows:
 			behind += missing
 		case int(loaded) >= renderRowCap:
 			capped += missing
+		case button:
+			slow += missing
 		default:
-			unloaded += missing
+			other += missing
 		}
 	}
 	if behind > 0 {
-		reasons = append(reasons, fmt.Sprintf("rows behind Load more in embedded views: %d (all_rows)", behind))
+		reasons = append(reasons, fmt.Sprintf("rows behind Load more: %d (all_rows)", behind))
 	}
 	if capped > 0 {
 		reasons = append(reasons, fmt.Sprintf("rows beyond the %d loaded per view: %d", renderRowCap, capped))
 	}
-	if unloaded > 0 {
-		reasons = append(reasons, fmt.Sprintf("rows that did not load in time: %d", unloaded))
+	if slow > 0 {
+		reasons = append(reasons, fmt.Sprintf("rows that did not load in time: %d", slow))
+	}
+	if other > 0 {
+		reasons = append(reasons, fmt.Sprintf("rows not loaded: %d", other))
 	}
 
 	closed := map[string]bool{}

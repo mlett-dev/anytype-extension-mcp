@@ -78,7 +78,7 @@ def run(s):
             views[0].get("source_id") == coll and views[0].get("view_name") and isinstance(views[0].get("filters"), int), views)
     s.check("it shows the first rows of 12 and says all_rows loads the rest",
             views[0].get("rows_total") == 12 and views[0].get("rows_shown", 12) < 12
-            and any("rows behind Load more in embedded views: 2 (all_rows)" in r for r in some.get("incomplete_reasons", [])),
+            and any("rows behind Load more: 2 (all_rows)" in r for r in some.get("incomplete_reasons", [])),
             (views, some.get("incomplete_reasons")))
     s.check("image false returns the report without an image", "uri" not in some, some.get("uri"))
     every = s.c.call("object-render", space_id=s.space_id, object_id=host, all_rows=True)

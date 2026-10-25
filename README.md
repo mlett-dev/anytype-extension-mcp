@@ -385,7 +385,9 @@ JPEG or PNG, plus a layout report measured in the rendered page:
   lies outside the picture, and for a grid the columns with their widths,
   `cut_off_px`, and per column the cells whose text is cut short with the
   width the longest of them needs (`needs_px`) — or, with "wrap content" on,
-  how many cells wrap. A calendar counts the entries of the month it shows;
+  how many cells wrap. Rows are counted per view type: a board sums its
+  columns, a calendar loads day by day and reports only the month it shows
+  (`month`) and the entries there (`rows_shown`);
 - text blocks cut off at the side, and images that failed or were still
   loading, by block id.
 

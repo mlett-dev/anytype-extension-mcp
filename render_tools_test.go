@@ -302,9 +302,9 @@ func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
 	reply["image"] = ""
 	reply["complete"] = false
 	reply["layout"].(map[string]any)["dataviews"] = []any{
-		map[string]any{"block_id": "dv1", "kind": "query", "rows_shown": 10, "rows_loaded": 10, "rows_total": 63},
+		map[string]any{"block_id": "dv1", "kind": "query", "rows_shown": 10, "rows_loaded": 10, "rows_total": 63, "load_more": true},
 		map[string]any{"block_id": "dataview", "kind": "query", "rows_shown": 30, "rows_loaded": 30, "rows_total": 30},
-		map[string]any{"block_id": "dv2", "kind": "query", "rows_shown": 500, "rows_loaded": 500, "rows_total": 800},
+		map[string]any{"block_id": "dv2", "kind": "query", "rows_shown": 500, "rows_loaded": 500, "rows_total": 800, "load_more": true},
 	}
 	daemon, calls, last := fakeRenderer(t, http.StatusOK, reply)
 	server, _ := renderTestServer(t, daemon.URL)
@@ -328,7 +328,7 @@ func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Rows not loaded count, rows loaded but below the picture do not.
-	if got := reasons(res); !strings.Contains(got, "rows behind Load more in embedded views: 353 (all_rows)") {
+	if got := reasons(res); !strings.Contains(got, "rows behind Load more: 353 (all_rows)") {
 		t.Errorf("reasons = %q", got)
 	}
 	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "image": false, "all_rows": true})
@@ -393,5 +393,21 @@ func TestObjectRenderPassesViews(t *testing.T) {
 		if _, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "views": bad}); err == nil {
 			t.Errorf("views %v accepted", bad)
 		}
+	}
+}
+
+func TestHiddenContentCountsRowsOnlyWhereTheyAreKnown(t *testing.T) {
+	done := true
+	r := renderResponse{Complete: &done, Layout: map[string]any{"dataviews": []any{
+		// A calendar loads day by day: no totals, nothing to count.
+		map[string]any{"block_id": "cal", "view": "calendar", "month": "2026-10", "rows_shown": 0.0},
+		// A board on its own page, columns with 30 cards, 20 loaded.
+		map[string]any{"block_id": "dataview", "view": "board", "rows_total": 30.0, "rows_loaded": 20.0, "load_more": true},
+		// No button: loaded as far as the GUI goes, yet short of the total.
+		map[string]any{"block_id": "dv", "view": "grid", "rows_total": 300.0, "rows_loaded": 290.0},
+	}}}
+	got := strings.Join(hiddenContent(r, nil, true, false, true), " | ")
+	if got != "rows behind Load more: 10 (all_rows) | rows not loaded: 10" {
+		t.Errorf("reasons = %q", got)
 	}
 }
