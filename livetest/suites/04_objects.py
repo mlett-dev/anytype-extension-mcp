@@ -379,11 +379,17 @@ def run(s):
                 "schema-set-order", space_id=s.space_id, kind="tags",
                 property_key=prop["key"], ids=["Fertig", offen["key"]],
             )
-            listed = s.c.call("list-tags", space_id=s.space_id, property_id=prop["id"])
-            listed = [t["id"] for t in (listed.get("tags") or listed.get("data") or [])]
+            # list-tags is no witness: REST lists the options in index order,
+            # unsorted. The order lives in each option's orderId, which the app
+            # sorts by.
+            def order_id(tag_id):
+                return json.loads(s.c.call(
+                    "object-export", space_id=s.space_id, object_id=tag_id, format="json",
+                )["content"])["snapshot"]["data"]["details"].get("orderId", "")
+            first, second = order_id(done["id"]), order_id(offen["id"])
             s.check("schema-set-order takes tag names and keys and answers the ids",
-                    ordered.get("ids") == [done["id"], offen["id"]] and listed[:2] == [done["id"], offen["id"]],
-                    {"answer": ordered.get("ids"), "listed": listed})
+                    ordered.get("ids") == [done["id"], offen["id"]] and first and second and first < second,
+                    {"answer": ordered.get("ids"), "orderIds": [first, second]})
             plan = s.c.call(
                 "clean-unused-tags", space_id=s.space_id, property_id=prop["id"], keep_tag_ids=["Offen"],
             )

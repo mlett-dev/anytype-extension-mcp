@@ -985,4 +985,4 @@ REST is safe but narrower: it takes a tag id or key and refuses a name ("invalid
 
 Object and file properties have the same gap over gRPC: heart stores an object name as readily as a tag key, and the app shows a link to nothing. `objects-modify-property` refuses set/add values that start with neither `bafy` nor `_` (derived ids such as participants and dates), except on system relations, which hold relation keys and markers (`featuredRelations`, `spaceDashboardId`).
 
-`BlockDataviewObjectOrderUpdate` stores an order under any group id; an id that is no group of the view is kept and ignored.
+`BlockDataviewObjectOrderUpdate` stores an order under any group id; an id that is no group of the view is kept and ignored. REST `list-tags` returns the options in index order, unsorted (core/api/service/tag.go has no sort), so it says nothing about the order `RelationOptionSetOrder` set; that order is each option's `orderId`, which the app sorts by.
