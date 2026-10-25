@@ -473,6 +473,9 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 	if err != nil {
 		return DetailCheck{}, err
 	}
+	// The values are rewritten below, and the caller's slice is not ours.
+	ops = append([]DetailOperation(nil), ops...)
+	prep := &filterPrep{c: c, ctx: ctx, spaceID: spaceID, keys: keys, options: map[string][]tagOption{}}
 	modelOps := make([]*pb.RpcObjectListModifyDetailValuesRequestOperation, 0, len(ops))
 	var removals []*model.Detail
 	resolved := make([]string, len(ops))
@@ -495,6 +498,10 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 			return DetailCheck{}, fmt.Errorf("operations[%d]: %w", i, err)
 		}
 		resolved[i] = relationKey
+		if err := prep.resolveTagOperation(relationKey, &op); err != nil {
+			return DetailCheck{}, fmt.Errorf("operations[%d]: %w", i, err)
+		}
+		ops[i] = op
 		if op.HasSet && op.Set == nil {
 			removals = append(removals, &model.Detail{Key: relationKey, Value: toProtoValue(nil)})
 			removed[relationKey] = true
@@ -547,4 +554,72 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 		}
 	}
 	return c.checkDetails(ctx, spaceID, objectIDs, detailExpectations(ops, resolved))
+}
+
+// resolveTagOperation turns the tag names and keys of a select or multi-select
+// operation into option ids. heart stores whatever string it gets: a key such
+// as "done" lands in the object as it is, the app shows the property empty,
+// and REST still reads it as the tag, because its tag cache is indexed by key
+// as well as by id. The read-back would then confirm the key it was sent.
+// Values to remove that are no option (a deleted tag still on the object) pass
+// through when they are ids; taking them off does no harm.
+func (p *filterPrep) resolveTagOperation(key string, op *DetailOperation) error {
+	format, known := p.format(key)
+	if !known || (format != model.RelationFormat_tag && format != model.RelationFormat_status) {
+		return nil
+	}
+	resolve := func(v any, removing bool) (any, error) {
+		var list []any
+		switch x := v.(type) {
+		case nil:
+			return nil, nil
+		case string:
+			if x == "" {
+				return x, nil
+			}
+			list = []any{x}
+		case []any:
+			list = x
+		default:
+			return nil, fmt.Errorf("%s takes tag ids, names or keys, not %v", p.keys.describe(key), v)
+		}
+		keep := map[string]bool{}
+		for _, item := range list {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s takes tag ids, names or keys, not %v", p.keys.describe(key), item)
+			}
+			if removing && strings.HasPrefix(s, "bafy") {
+				keep[s] = true
+			}
+		}
+		ids, err := p.resolveTags(key, list, keep)
+		if err != nil {
+			return nil, err
+		}
+		if _, single := v.(string); single {
+			return ids[0], nil
+		}
+		return ids, nil
+	}
+	var err error
+	if op.HasSet {
+		if op.Set, err = resolve(op.Set, false); err != nil {
+			return err
+		}
+		if list, ok := op.Set.([]any); ok && format == model.RelationFormat_status && len(list) > 1 {
+			return fmt.Errorf("%s is a select property and holds one tag, not %d", p.keys.describe(key), len(list))
+		}
+	}
+	if op.HasAdd {
+		if op.Add, err = resolve(op.Add, false); err != nil {
+			return err
+		}
+	}
+	if op.HasRemove {
+		if op.Remove, err = resolve(op.Remove, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }

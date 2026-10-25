@@ -1,8 +1,10 @@
 package anytypefiles
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
 	"github.com/gogo/protobuf/types"
 )
 
@@ -64,5 +66,56 @@ func TestDetailCheckComplete(t *testing.T) {
 	}
 	if (DetailCheck{Verified: 2, MismatchCount: 1}).Complete() {
 		t.Error("a mismatch must not count as done")
+	}
+}
+
+func TestResolveTagOperation(t *testing.T) {
+	prep := &filterPrep{
+		keys: &relationKeyMap{formats: map[string]model.RelationFormat{
+			"status": model.RelationFormat_status, "tag": model.RelationFormat_tag, "description": model.RelationFormat_longtext,
+		}},
+		options: map[string][]tagOption{
+			"status": {{id: "bafyopen", name: "Open", key: "open"}, {id: "bafydone", name: "Done", key: "done"}},
+			"tag":    {{id: "bafyred", name: "Rot", key: "rot"}, {id: "bafyblue", name: "Blau", key: "blau"}},
+		},
+	}
+	cases := []struct {
+		name    string
+		key     string
+		op      DetailOperation
+		want    DetailOperation
+		wantErr string
+	}{
+		{"select key", "status", DetailOperation{Set: "done", HasSet: true}, DetailOperation{Set: "bafydone", HasSet: true}, ""},
+		{"select name", "status", DetailOperation{Set: "Done", HasSet: true}, DetailOperation{Set: "bafydone", HasSet: true}, ""},
+		{"select id", "status", DetailOperation{Set: "bafydone", HasSet: true}, DetailOperation{Set: "bafydone", HasSet: true}, ""},
+		{"select cleared", "status", DetailOperation{Set: "", HasSet: true}, DetailOperation{Set: "", HasSet: true}, ""},
+		{"select unknown", "status", DetailOperation{Set: "does_not_exist", HasSet: true}, DetailOperation{}, "has no tag"},
+		{"select unknown id", "status", DetailOperation{Set: "bafyredd", HasSet: true}, DetailOperation{}, "has no tag"},
+		{"select two tags", "status", DetailOperation{Set: []any{"open", "done"}, HasSet: true}, DetailOperation{}, "holds one tag"},
+		{"select number", "status", DetailOperation{Set: float64(1), HasSet: true}, DetailOperation{}, "takes tag ids"},
+		{"multi add keys", "tag", DetailOperation{Add: []any{"rot", "Blau"}, HasAdd: true}, DetailOperation{Add: []any{"bafyred", "bafyblue"}, HasAdd: true}, ""},
+		{"multi remove key", "tag", DetailOperation{Remove: "rot", HasRemove: true}, DetailOperation{Remove: "bafyred", HasRemove: true}, ""},
+		{"multi remove a deleted tag's id", "tag", DetailOperation{Remove: []any{"bafygone"}, HasRemove: true}, DetailOperation{Remove: []any{"bafygone"}, HasRemove: true}, ""},
+		{"multi add a deleted tag's id", "tag", DetailOperation{Add: []any{"bafygone"}, HasAdd: true}, DetailOperation{}, "has no tag"},
+		{"multi emptied", "tag", DetailOperation{Set: []any{}, HasSet: true}, DetailOperation{Set: []any{}, HasSet: true}, ""},
+		{"other formats untouched", "description", DetailOperation{Set: "done", HasSet: true}, DetailOperation{Set: "done", HasSet: true}, ""},
+	}
+	for _, c := range cases {
+		op := c.op
+		err := prep.resolveTagOperation(c.key, &op)
+		if c.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("%s: err %v, want %q", c.name, err, c.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if !sameValue(op.Set, c.want.Set) || !sameValue(op.Add, c.want.Add) || !sameValue(op.Remove, c.want.Remove) {
+			t.Errorf("%s: got %+v, want %+v", c.name, op, c.want)
+		}
 	}
 }

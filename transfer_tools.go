@@ -24,7 +24,7 @@ import (
 // The three fields are deliberately untyped in the schema — they carry a
 // different shape per property format — which left the model guessing. Naming
 // the shapes here is the part that was actually missing.
-const modifyShapeNote = "Shape follows the property's format: multi_select and objects take a tag id / object id or an array of them, files an object id or an array, text/url/email/phone a string, number a number, checkbox true or false, date an RFC3339 datetime or YYYY-MM-DD. add and remove only make sense for the multi-value formats (multi_select, objects, files); use set for the rest. Check the format with get-type-compact or list-properties first."
+const modifyShapeNote = "Shape follows the property's format: select takes one tag, multi_select one or an array (tag id, name or key; names and keys are resolved to ids), objects an object id or an array, files an object id or an array, text/url/email/phone a string, number a number, checkbox true or false, date an RFC3339 datetime or YYYY-MM-DD. add and remove only make sense for the multi-value formats (multi_select, objects, files); use set for the rest. Check the format with get-type-compact or list-properties first."
 
 func (s *mcpServer) transferToolDefs() []any {
 	return []any{
@@ -157,7 +157,7 @@ func (s *mcpServer) transferToolDefs() []any {
 							"property_key": strProp("Property key, e.g. \"tag\", from list-properties. " + relationKeySpellingNote),
 							"add":          map[string]any{"description": "Value(s) to add to a multi-value property. " + modifyShapeNote},
 							"remove":       map[string]any{"description": "Value(s) to remove from a multi-value property. " + modifyShapeNote},
-							"set":          map[string]any{"description": "Value to overwrite the property with, replacing whatever is there. Unlike add/remove this works for single-value formats too: a string for text/url/email/phone/select, a number for number, true/false for checkbox, an RFC3339 datetime or YYYY-MM-DD for date, an array for multi_select/objects/files. null removes the property from the object, as the app's \"Remove from object\" does; \"\", [] or false leave it on the object, empty, where the app still shows it. null cannot be combined with other operations on the same key. " + modifyShapeNote},
+							"set":          map[string]any{"description": "Value to overwrite the property with, replacing whatever is there. Unlike add/remove this works for single-value formats too: a string for text/url/email/phone, a tag for select, a number for number, true/false for checkbox, an RFC3339 datetime or YYYY-MM-DD for date, an array for multi_select/objects/files. null removes the property from the object, as the app's \"Remove from object\" does; \"\", [] or false leave it on the object, empty, where the app still shows it. null cannot be combined with other operations on the same key. " + modifyShapeNote},
 						},
 						"required": []any{"property_key"},
 					},

@@ -6,6 +6,7 @@ offers no way back, so object-set-archived is the only route out of the bin.
 """
 
 import json
+import time
 
 
 def run(s):
@@ -253,6 +254,69 @@ def run(s):
         linked not in json.dumps(own_cleared["object"].get("properties")),
         json.dumps(own_cleared["object"].get("properties"))[:200],
     )
+    # A tag key or name sent as a select value was stored as that string: the
+    # app showed the property empty, REST still read it as the tag (its cache
+    # is keyed by tag key too), and the read-back confirmed what it was sent.
+    # Names and keys are now resolved to option ids before the write, so the
+    # read-back passing means the id is what heart holds.
+    suffix = str(int(time.time()))
+    for fmt in ("select", "multi_select"):
+        prop = s.c.call(
+            "create-property", space_id=s.space_id, name=s.probe(fmt), format=fmt,
+            tags=[{"name": "Offen", "color": "grey", "key": f"lt_open_{fmt}_{suffix}"},
+                  {"name": "Fertig", "color": "lime", "key": f"lt_done_{fmt}_{suffix}"}],
+        )
+        prop = prop.get("property") or prop
+        s.track(prop["id"])
+        opts = s.c.call("list-tags", space_id=s.space_id, property_id=prop["id"])
+        opts = {t["name"]: t for t in (opts.get("tags") or opts.get("data") or [])}
+        done = opts["Fertig"]
+        by_key = s.c.call(
+            "objects-modify-property", space_id=s.space_id, object_ids=[targets[1]],
+            operations=[{"property_key": prop["key"], "set": done["key"]}],
+        )
+        # REST reads a stored key as the tag, so only the raw details tell.
+        details = json.loads(s.c.call(
+            "object-export", space_id=s.space_id, object_id=targets[1], format="json",
+        )["content"])["snapshot"]["data"]["details"]
+        stored = [v for v in details.values() if v == done["id"] or v == [done["id"]] or v == done["key"] or v == [done["key"]]]
+        s.check(
+            f"{fmt}: a tag key is stored as the tag's id, which the read-back confirms",
+            by_key.get("updated") is True and by_key.get("verified") == 1
+            and stored and all(v in (done["id"], [done["id"]]) for v in stored),
+            {"result": by_key, "stored": stored},
+        )
+        by_name = s.c.call(
+            "objects-modify-property", space_id=s.space_id, object_ids=[targets[1]],
+            operations=[{"property_key": prop["key"], "set": "fertig"}],
+        )
+        s.check(f"{fmt}: so is a tag name", by_name.get("updated") is True, by_name)
+        status, msg = s.c.try_call(
+            "objects-modify-property", space_id=s.space_id, object_ids=[targets[1]],
+            operations=[{"property_key": prop["key"], "set": "gibtesnicht"}],
+        )
+        s.check(f"{fmt}: an unknown tag is refused, naming the tags", status == "err" and "Fertig" in msg, msg)
+        if fmt == "multi_select":
+            s.c.call(
+                "objects-modify-property", space_id=s.space_id, object_ids=[targets[1]],
+                operations=[{"property_key": prop["key"], "add": [opts["Offen"]["key"]]}],
+            )
+            removed = s.c.call(
+                "objects-modify-property", space_id=s.space_id, object_ids=[targets[1]],
+                operations=[{"property_key": prop["key"], "remove": [done["key"]]}],
+            )
+            s.settle()
+            left = s.c.call(
+                "get-object-compact", space_id=s.space_id, object_id=targets[1],
+                property_keys=[prop["key"]],
+            )
+            text = json.dumps(left["object"].get("properties"))
+            s.check(
+                "multi_select: a remove by key takes the tag off, an add by key puts one on",
+                removed.get("updated") is True and done["id"] not in text and opts["Offen"]["id"] in text,
+                text[:200],
+            )
+
     # The translation must not become stricter than anytype itself: a bundled
     # relation exists in every space even when the space index holds no object
     # for it, which is why heart asks the bundle before the index. starred is
