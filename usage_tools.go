@@ -20,7 +20,7 @@ func (s *mcpServer) usageToolDefs() []any {
 	return []any{
 		map[string]any{
 			"name":        "analyze-property-usage",
-			"description": "Count how often each option of a select or multi-select property is actually used, so a schema can be understood without reading every object by hand. The scan covers objects in the bin as well as live ones, and also the filters of queries and collections, where an option can be referenced without any object holding it. Returns one entry per option with its usage count, plus totals.",
+			"description": "Count how often each option of a select or multi-select property is actually used, so a schema can be understood without reading every object by hand. The scan covers objects in the bin as well as live ones, and also the filters of queries, collections and views embedded in pages, where an option can be referenced without any object holding it. Returns one entry per option with its usage count, plus totals.",
 			"inputSchema": restSchema([]string{"space_id", "property_id"}, map[string]any{
 				"space_id":    spaceIDProp(),
 				"property_id": strProp("Property to analyse: the bafyrei... id from list-properties. Must be a select or multi_select property."),
@@ -48,7 +48,7 @@ func (s *mcpServer) usageToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "analyze-schema-usage",
-			"description": "Find the parts of a space's schema that nothing uses any more: types no object has, and properties no object fills in. Counts objects in the Bin and the filters, sorts and columns of every query, so a type or property that only some saved view depends on is not reported as dead. This is the same idea as analyze-property-usage, one level up: that one looks inside a property's options, this one looks at properties and types themselves.",
+			"description": "Find the parts of a space's schema that nothing uses any more: types no object has, and properties no object fills in. Counts objects in the Bin and the filters, sorts and columns of every query and embedded view, so a type or property that only some saved view depends on is not reported as dead. This is the same idea as analyze-property-usage, one level up: that one looks inside a property's options, this one looks at properties and types themselves.",
 			"inputSchema": restSchema([]string{"space_id"}, map[string]any{
 				"space_id":    spaceIDProp(),
 				"kind":        enumProp("What to examine. Defaults to both.", []string{"properties", "types", "both"}),
@@ -58,7 +58,7 @@ func (s *mcpServer) usageToolDefs() []any {
 		map[string]any{
 			"name": "clean-unused-tags",
 			"description": "Remove the options of a select or multi-select property that nothing uses — the tidy-up for a property that has accumulated dead entries.\n\n" +
-				"Safety comes first here. An option is only proposed for removal when NOTHING references it: no live object, no object in the bin, and no filter of any query or collection in the space. type_keys narrows what is reported, never what is checked, so an option used by some other type is never removed.\n\n" +
+				"Safety comes first here. An option is only proposed for removal when NOTHING references it: no live object, no object in the bin, and no filter of any query, collection or embedded view in the space. type_keys narrows what is reported, never what is checked, so an option used by some other type is never removed.\n\n" +
 				"Runs as a dry run by default and reports what it would do. Pass dry_run=false together with confirm=true to carry it out, and only after the user has agreed to the specific list. Removal archives the options the way delete-tag does; objects keep working and the options disappear from list-tags. Archiving is undoable: object-set-archived with archived=false and a tag id puts it back, and list-archived shows what is in the bin.",
 			"inputSchema": restSchema([]string{"space_id", "property_id"}, map[string]any{
 				"space_id":    spaceIDProp(),

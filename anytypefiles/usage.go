@@ -57,7 +57,8 @@ type PropertyUsage struct {
 	LiveViewRefs map[string]int
 	// ScannedObjects is how many objects carried a value for the property.
 	ScannedObjects int
-	// ScannedViews is how many query/collection objects were inspected.
+	// ScannedViews is how many dataview blocks were inspected: queries and
+	// collections, and views embedded in other objects.
 	ScannedViews int
 	// RelationKey is the internal key the values were found under.
 	RelationKey string
@@ -216,17 +217,58 @@ func structField(s *types.Struct, key string) *types.Value {
 func (c *Client) collectViewReferences(ctx context.Context, spaceID string) (map[string]int, map[string]int, int, error) {
 	refs := make(map[string]int)
 	live := make(map[string]int)
-	scanned := 0
-
-	// Archived queries are inspected too: an archived query still holds its
-	// filters, and restoring it would resurrect a reference to an option
-	// removed in the meantime. They are counted separately from live ones so
-	// clean-unused-tags can offer to disregard the bin.
-	for _, archived := range []bool{false, true} {
-		condition := model.BlockContentDataviewFilter_NotEqual
-		if archived {
-			condition = model.BlockContentDataviewFilter_Equal
+	scanned, err := c.scanViewHolders(ctx, spaceID, func(h viewHolder) {
+		for _, view := range h.views {
+			// Rules inside a filter group reference tags just the same.
+			WalkFilters(view.Filters, func(filter FilterSpec) {
+				for _, id := range filterValueStrings(filter.Value) {
+					refs[id]++
+					if !h.archived {
+						live[id]++
+					}
+				}
+			})
 		}
+	})
+	if err != nil {
+		return nil, nil, scanned, err
+	}
+	return refs, live, scanned, nil
+}
+
+// viewHolder is one dataview block a scan reads: the own block of a query or
+// collection, or a view embedded in another object.
+type viewHolder struct {
+	objectID string
+	archived bool
+	// source is set for a query itself. An embedded view has none of its
+	// own: the object it shows is the source, and that one is scanned too.
+	source []string
+	views  []ViewSpec
+}
+
+// scanViewHolders calls fn for every dataview block in the space that holds
+// views: each query and collection, and every view embedded in a page.
+//
+// The embedded ones matter as much as the queries themselves. An embed copies
+// the views at the moment it is made and then keeps its own filters
+// (block-embed-query), so a tag referenced only by an embedded view's filter
+// is referenced nowhere else — a scan of the queries alone called it unused,
+// and clean-unused-tags would have deleted it. No search can match blocks,
+// but heart lists an embed's target in the host object's links
+// (simple/dataview FillSmartIds), so the hosts are exactly the objects that
+// link to one of the queries and collections found first.
+//
+// Archived objects are scanned too: an archived query still holds its filters,
+// and restoring it would resurrect a reference to an option removed in the
+// meantime. They are reported as archived so clean-unused-tags can offer to
+// disregard the bin. An object that cannot be read is an error, not an empty
+// result: it is not proof of absence.
+func (c *Client) scanViewHolders(ctx context.Context, spaceID string, fn func(viewHolder)) (int, error) {
+	scanned := 0
+	var targets []*types.Value
+	seen := map[string]bool{}
+	for _, archived := range []bool{false, true} {
 		records, err := c.searchAll(ctx, &pb.RpcObjectSearchRequest{
 			SpaceId: spaceID,
 			Filters: []*model.BlockContentDataviewFilter{
@@ -238,44 +280,107 @@ func (c *Client) collectViewReferences(ctx context.Context, spaceID string) (map
 						{Kind: &types.Value_NumberValue{NumberValue: float64(model.ObjectType_collection)}},
 					}}}},
 				},
-				{
-					RelationKey: "isArchived",
-					Condition:   condition,
-					Value:       &types.Value{Kind: &types.Value_BoolValue{BoolValue: true}},
-				},
+				archivedFilter(archived),
 			},
 			Keys: []string{"id", "name"},
 		}, "queries and collections")
 		if err != nil {
-			return nil, nil, scanned, err
+			return scanned, err
 		}
-
 		for _, record := range records {
 			objectID, _ := fromProtoValue(structField(record, "id")).(string)
-			if objectID == "" {
+			if objectID == "" || seen[objectID] {
 				continue
 			}
+			seen[objectID] = true
 			info, err := c.InspectDataview(ctx, spaceID, objectID, "")
 			if err != nil {
-				// A query whose dataview cannot be read is not proof of
-				// absence, so it is reported rather than quietly treated as
-				// holding no references.
-				return nil, nil, scanned, fmt.Errorf("could not inspect the views of %s: %w", objectID, err)
+				return scanned, fmt.Errorf("could not inspect the views of %s: %w", objectID, err)
 			}
 			scanned++
-			for _, view := range info.Views {
-				for _, filter := range view.Filters {
-					for _, id := range filterValueStrings(filter.Value) {
-						refs[id]++
-						if !archived {
-							live[id]++
-						}
-					}
-				}
+			targets = append(targets, &types.Value{Kind: &types.Value_StringValue{StringValue: objectID}})
+			fn(viewHolder{objectID: objectID, archived: archived, source: info.Source, views: info.Views})
+		}
+	}
+	if len(targets) == 0 {
+		return scanned, nil
+	}
+
+	for _, archived := range []bool{false, true} {
+		hosts, err := c.searchAll(ctx, &pb.RpcObjectSearchRequest{
+			SpaceId: spaceID,
+			Filters: []*model.BlockContentDataviewFilter{
+				{
+					RelationKey: "links",
+					Condition:   model.BlockContentDataviewFilter_In,
+					Value:       &types.Value{Kind: &types.Value_ListValue{ListValue: &types.ListValue{Values: targets}}},
+				},
+				archivedFilter(archived),
+			},
+			Keys: []string{"id"},
+		}, "objects linking to queries and collections")
+		if err != nil {
+			return scanned, err
+		}
+		for _, record := range hosts {
+			objectID, _ := fromProtoValue(structField(record, "id")).(string)
+			if objectID == "" || seen[objectID] {
+				continue
+			}
+			seen[objectID] = true
+			embedded, err := c.embeddedViews(ctx, spaceID, objectID)
+			if err != nil {
+				return scanned, fmt.Errorf("could not read the embedded views of %s: %w", objectID, err)
+			}
+			for _, views := range embedded {
+				scanned++
+				fn(viewHolder{objectID: objectID, archived: archived, views: views})
 			}
 		}
 	}
-	return refs, live, scanned, nil
+	return scanned, nil
+}
+
+func archivedFilter(archived bool) *model.BlockContentDataviewFilter {
+	condition := model.BlockContentDataviewFilter_NotEqual
+	if archived {
+		condition = model.BlockContentDataviewFilter_Equal
+	}
+	return &model.BlockContentDataviewFilter{
+		RelationKey: "isArchived",
+		Condition:   condition,
+		Value:       &types.Value{Kind: &types.Value_BoolValue{BoolValue: true}},
+	}
+}
+
+// embeddedViews returns the views of every embedded dataview block of an
+// object, one list per block. An object that merely links to a query, as text
+// or a link block, has none.
+func (c *Client) embeddedViews(ctx context.Context, spaceID, objectID string) ([][]ViewSpec, error) {
+	callCtx, cancel := c.contextWithAuth(ctx)
+	defer cancel()
+	resp, err := c.rpc.ObjectShow(callCtx, &pb.RpcObjectShowRequest{
+		SpaceId: spaceID, ObjectId: objectID, ContextId: objectID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gRPC ObjectShow failed: %w", err)
+	}
+	if resp.Error != nil && resp.Error.Code != pb.RpcObjectShowResponseError_NULL {
+		return nil, fmt.Errorf("ObjectShow error (%s): %s", resp.Error.Code, resp.Error.Description)
+	}
+	var out [][]ViewSpec
+	for _, block := range resp.GetObjectView().GetBlocks() {
+		dv := block.GetDataview()
+		if dv == nil || dv.TargetObjectId == "" {
+			continue
+		}
+		views := make([]ViewSpec, 0, len(dv.Views))
+		for _, v := range dv.Views {
+			views = append(views, viewFromModel(v))
+		}
+		out = append(out, views)
+	}
+	return out, nil
 }
 
 // filterValueStrings pulls option ids out of a decoded filter value, which may
@@ -529,65 +634,31 @@ type viewSchemaUsage struct {
 // space depend on, which no object scan reveals.
 func (c *Client) collectViewSchemaUsage(ctx context.Context, spaceID string) (viewSchemaUsage, int, error) {
 	out := viewSchemaUsage{relations: map[string]int{}, sources: map[string]int{}}
-	scanned := 0
-
-	for _, archived := range []bool{false, true} {
-		condition := model.BlockContentDataviewFilter_NotEqual
-		if archived {
-			condition = model.BlockContentDataviewFilter_Equal
+	scanned, err := c.scanViewHolders(ctx, spaceID, func(h viewHolder) {
+		for _, source := range h.source {
+			out.sources[source]++
 		}
-		records, err := c.searchAll(ctx, &pb.RpcObjectSearchRequest{
-			SpaceId: spaceID,
-			Filters: []*model.BlockContentDataviewFilter{
-				{
-					RelationKey: "resolvedLayout",
-					Condition:   model.BlockContentDataviewFilter_In,
-					Value: &types.Value{Kind: &types.Value_ListValue{ListValue: &types.ListValue{Values: []*types.Value{
-						{Kind: &types.Value_NumberValue{NumberValue: float64(model.ObjectType_set)}},
-						{Kind: &types.Value_NumberValue{NumberValue: float64(model.ObjectType_collection)}},
-					}}}},
-				},
-				{
-					RelationKey: "isArchived",
-					Condition:   condition,
-					Value:       &types.Value{Kind: &types.Value_BoolValue{BoolValue: true}},
-				},
-			},
-			Keys: []string{"id", "name"},
-		}, "queries and collections")
-		if err != nil {
-			return viewSchemaUsage{}, scanned, err
-		}
-		for _, record := range records {
-			objectID, _ := fromProtoValue(structField(record, "id")).(string)
-			if objectID == "" {
-				continue
-			}
-			info, err := c.InspectDataview(ctx, spaceID, objectID, "")
-			if err != nil {
-				return viewSchemaUsage{}, scanned, fmt.Errorf("could not inspect the views of %s: %w", objectID, err)
-			}
-			scanned++
-			for _, source := range info.Source {
-				out.sources[source]++
-			}
-			for _, view := range info.Views {
-				for _, filter := range view.Filters {
+		for _, view := range h.views {
+			WalkFilters(view.Filters, func(filter FilterSpec) {
+				if filter.RelationKey != "" {
 					out.relations[filter.RelationKey]++
 				}
-				for _, s := range view.Sorts {
-					out.relations[s.RelationKey]++
-				}
-				for _, r := range view.Relations {
-					if r.IsVisible {
-						out.relations[r.Key]++
-					}
-				}
-				if view.GroupRelationKey != "" {
-					out.relations[view.GroupRelationKey]++
+			})
+			for _, s := range view.Sorts {
+				out.relations[s.RelationKey]++
+			}
+			for _, r := range view.Relations {
+				if r.IsVisible {
+					out.relations[r.Key]++
 				}
 			}
+			if view.GroupRelationKey != "" {
+				out.relations[view.GroupRelationKey]++
+			}
 		}
+	})
+	if err != nil {
+		return viewSchemaUsage{}, scanned, err
 	}
 	return out, scanned, nil
 }

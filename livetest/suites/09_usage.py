@@ -10,6 +10,8 @@ option:
   * an option used ONLY by an object in the bin — ObjectSearch hides archived
     objects unless asked, so a careless scan would call this unused
   * an option referenced ONLY by a query's filter — no object holds it at all
+  * an option referenced ONLY by the filter of a view embedded in a page — the
+    embed keeps its own filters, so the query itself does not mention it
 """
 
 
@@ -22,7 +24,7 @@ def run(s):
     prop_key = (prop.get("property") or prop)["key"]
     s.track(prop_id)
 
-    labels = ["live-a", "live-b", "nur-archiv", "nur-view", "ungenutzt-1", "ungenutzt-2"]
+    labels = ["live-a", "live-b", "nur-archiv", "nur-view", "nur-embed", "ungenutzt-1", "ungenutzt-2"]
     s.c.call(
         "create-tag", space_id=s.space_id, property_id=prop_id,
         tags=[{"name": s.probe(l), "color": "grey"} for l in labels],
@@ -31,7 +33,7 @@ def run(s):
     tags = {t["name"].rsplit(" ", 1)[-1]: t["id"]
             for t in (listed.get("tags") or listed.get("data") or [])}
     s.track(*tags.values())
-    s.check("six fixture options exist", len(tags) == 6, sorted(tags))
+    s.check("seven fixture options exist", len(tags) == 7, sorted(tags))
 
     def tag_objects(label, count):
         made = []
@@ -64,6 +66,17 @@ def run(s):
         view_id=query["views"][0]["id"], property_key=prop_key,
         condition="in", value=[tags["nur-view"]], format="multi_select",
     )
+    # The embed trap: a page shows the query, and only the embedded view's own
+    # filter names this option.
+    host = s.page("usagehost")
+    s.c.call("block-embed-query", space_id=s.space_id, object_id=host, query_object_id=query["object_id"])
+    s.settle(1.5)
+    embed = s.c.call("query-inspect", space_id=s.space_id, object_id=host)
+    s.c.call(
+        "query-filter-add", space_id=s.space_id, object_id=host, block_id=embed["block_id"],
+        view_id=embed["views"][0]["id"], property_key=prop_key,
+        condition="in", value=[tags["nur-embed"]],
+    )
     s.settle(2.0)
 
     # --- the analysis ------------------------------------------------------
@@ -73,7 +86,7 @@ def run(s):
     counts = {e["name"].rsplit(" ", 1)[-1]: e for e in analysis["options"]}
     s.check(
         "the analysis reports every option",
-        analysis["total_options"] == 6 and len(counts) == 6,
+        analysis["total_options"] == 7 and len(counts) == 7,
         analysis["total_options"],
     )
     s.check("a live option is counted", counts["live-a"]["usage_count"] == 2, counts.get("live-a"))
@@ -90,8 +103,13 @@ def run(s):
         counts.get("nur-view"),
     )
     s.check(
+        "an option referenced only by an embedded view's filter counts as used",
+        counts["nur-embed"].get("view_filter_references", 0) >= 1,
+        counts.get("nur-embed"),
+    )
+    s.check(
         "the genuinely unused options are the only ones with no references",
-        analysis["unused_options"] == 2 and analysis["used_options"] == 4,
+        analysis["unused_options"] == 2 and analysis["used_options"] == 5,
         {k: v for k, v in analysis.items() if k.endswith("_options")},
     )
     only_unused = s.c.call(
@@ -126,7 +144,7 @@ def run(s):
     still_there = s.c.call("list-tags", space_id=s.space_id, property_id=prop_id)
     s.check(
         "a dry run changes nothing",
-        len(still_there.get("tags") or still_there.get("data") or []) == 6,
+        len(still_there.get("tags") or still_there.get("data") or []) == 7,
     )
 
     status, msg = s.c.try_call(
@@ -161,8 +179,8 @@ def run(s):
     names = {t["name"].rsplit(" ", 1)[-1]
              for t in (remaining.get("tags") or remaining.get("data") or [])}
     s.check(
-        "exactly the four referenced options survive",
-        names == {"live-a", "live-b", "nur-archiv", "nur-view"},
+        "exactly the five referenced options survive",
+        names == {"live-a", "live-b", "nur-archiv", "nur-view", "nur-embed"},
         names,
     )
     s.check(
@@ -172,6 +190,10 @@ def run(s):
     s.check(
         "the option used only by a view filter was NOT removed",
         "nur-view" in names,
+    )
+    s.check(
+        "the option used only by an embedded view's filter was NOT removed",
+        "nur-embed" in names,
     )
 
     after = s.c.call("clean-unused-tags", space_id=s.space_id, property_id=prop_id)
