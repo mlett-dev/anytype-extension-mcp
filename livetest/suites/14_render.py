@@ -132,3 +132,21 @@ def run(s):
     status, msg = s.c.try_call("object-render", space_id=s.space_id, object_id="kein-solches-objekt")
     s.check("an object that does not exist is an error, not an empty picture", status == "err", msg)
     s.check("the error says plainly that the object is not there", "object not found in this space" in msg, msg)
+
+    # The properties panel: Local lists every key the object holds that its
+    # type does not, empty ones too. done is no property of a page.
+    host_page = s.page("panel")
+    s.c.call("objects-modify-property", space_id=s.space_id, object_ids=[host_page],
+             operations=[{"property_key": "done", "set": False}])
+    panel = s.c.call("object-render", space_id=s.space_id, object_id=host_page, show_properties=True)
+    sections = ((panel.get("layout") or {}).get("properties_panel") or {}).get("sections") or []
+    local = [p for sec in sections if sec.get("section") == "local" for p in sec.get("properties", [])]
+    s.check("show_properties lists done under Local while the page holds it",
+            any(p.get("key") == "done" and p.get("value") == "unchecked" for p in local), sections)
+    s.check("the panel needed nothing the renderer refused", "warnings" not in panel, panel.get("warnings"))
+    s.c.call("objects-modify-property", space_id=s.space_id, object_ids=[host_page],
+             operations=[{"property_key": "done", "set": None}])
+    panel = s.c.call("object-render", space_id=s.space_id, object_id=host_page, show_properties=True, image=False)
+    sections = ((panel.get("layout") or {}).get("properties_panel") or {}).get("sections") or []
+    s.check("after set null done is gone from the panel",
+            not any(p.get("key") == "done" for sec in sections for p in sec.get("properties", [])), sections)

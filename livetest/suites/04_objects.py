@@ -127,6 +127,65 @@ def run(s):
             json.dumps(untagged["object"].get("properties"))[:180],
         )
 
+    # set null must take the property off the object. Stored as a key holding
+    # null it stays in the app's properties panel, which lists every key an
+    # object holds under Local, empty or not (14_render looks at the panel).
+    # REST leaves null out, so only the tool's own read-back can tell.
+    first = s.c.call(
+        "objects-modify-property", space_id=s.space_id, object_ids=targets,
+        operations=[{"property_key": "done", "set": False}],
+    )
+    s.check(
+        "a bulk set reads every object back",
+        first.get("updated") is True and first.get("verified") == len(targets),
+        first,
+    )
+    gone = s.c.call(
+        "objects-modify-property", space_id=s.space_id, object_ids=targets,
+        operations=[{"property_key": "done", "set": None}],
+    )
+    s.check(
+        "set null removes the property, which the read-back confirms",
+        gone.get("updated") is True and gone.get("verified") == len(targets)
+        and "mismatches" not in gone,
+        gone,
+    )
+    # heart answers a list call with success as soon as one object took the
+    # change; the object it could not reach is only logged there.
+    missing = "bafyreinotthere"
+    partial = s.c.call(
+        "objects-modify-property", space_id=s.space_id, object_ids=[targets[0], missing],
+        operations=[{"property_key": "done", "set": True}],
+    )
+    s.check(
+        "an object the change did not reach makes updated false and is named",
+        partial.get("updated") is False and partial.get("verified") == 1
+        and missing in (partial.get("unverified") or []),
+        partial,
+    )
+    status, msg = s.c.try_call(
+        "objects-modify-property", space_id=s.space_id, object_ids=[targets[0]],
+        operations=[{"property_key": "done", "set": None}, {"property_key": "done", "set": True}],
+    )
+    s.check(
+        "null with another operation on the same key is refused",
+        status == "err" and "pass it alone" in msg, msg,
+    )
+    status, msg = s.c.try_call(
+        "objects-modify-property", space_id=s.space_id, object_ids=[targets[0]],
+        operations=[{"property_key": "type", "set": None}],
+    )
+    s.check("removing an internal property is refused", status == "err", msg)
+    versions = s.c.call(
+        "object-versions", space_id=s.space_id, object_id=targets[0], limit=3,
+    )["versions"]
+    s.check(
+        "versions name their author and mark those of this server's account",
+        versions and all(v.get("author") and not v["author"].startswith("_participant_") for v in versions)
+        and versions[0].get("by_this_account") is True,
+        versions,
+    )
+
     # Everything above uses description and tag, and those are bundled
     # properties, where the REST spelling of the key and the internal one are
     # the same string. A property of one's own has no such luck: it is created

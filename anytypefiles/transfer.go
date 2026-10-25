@@ -16,6 +16,7 @@ import (
 
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
+	"github.com/gogo/protobuf/types"
 )
 
 var exportFormats = map[string]model.ExportFormat{
@@ -264,6 +265,38 @@ func (c *Client) ListVersions(ctx context.Context, objectID, beforeVersionID str
 	return out, nil
 }
 
+// MemberNames maps participant ids (a version's author) to member names, in
+// one search. Ids it cannot name are left out.
+func (c *Client) MemberNames(ctx context.Context, spaceID string, participantIDs []string) map[string]string {
+	out := map[string]string{}
+	if len(participantIDs) == 0 {
+		return out
+	}
+	ids := make([]*types.Value, 0, len(participantIDs))
+	for _, id := range participantIDs {
+		ids = append(ids, &types.Value{Kind: &types.Value_StringValue{StringValue: id}})
+	}
+	records, err := c.searchAll(ctx, &pb.RpcObjectSearchRequest{
+		SpaceId: spaceID,
+		Filters: []*model.BlockContentDataviewFilter{{
+			RelationKey: "id", Condition: model.BlockContentDataviewFilter_In,
+			Value: &types.Value{Kind: &types.Value_ListValue{ListValue: &types.ListValue{Values: ids}}},
+		}},
+		Keys: []string{"id", "name"},
+	}, "the authors")
+	if err != nil {
+		return out
+	}
+	for _, r := range records {
+		id, _ := fromProtoValue(structField(r, "id")).(string)
+		name, _ := fromProtoValue(structField(r, "name")).(string)
+		if id != "" && name != "" {
+			out[id] = name
+		}
+	}
+	return out
+}
+
 // ShowVersion reads the blocks of an object as they were in one version,
 // without changing anything.
 func (c *Client) ShowVersion(ctx context.Context, objectID, versionID string) ([]BlockInfo, error) {
@@ -405,17 +438,30 @@ type DetailOperation struct {
 }
 
 // ModifyDetailValues adds to, removes from or overwrites a property across many
-// objects at once.
+// objects at once, then reads every object back and reports how the change
+// landed.
 //
 // The point of add/remove is that they do not need a read first: adding one tag
 // to fifty objects would otherwise mean fifty reads, fifty merges and fifty
 // writes, with every one of them able to clobber a concurrent change.
-func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectIDs []string, ops []DetailOperation) error {
+//
+// set null takes another RPC. ObjectListModifyDetailValues stores a null set
+// as a key holding null, and the app's properties panel lists every key an
+// object holds under Local, empty or not: the property stays on the object as
+// an empty field, one click away from a value again. ObjectListSetDetails
+// deletes a key it is given null for (heart basic.applyDetailUpdates), and it
+// refuses heart's internal keys (type, layout, ...), which the app's "Remove
+// from object" (ObjectRelationDelete) would not.
+//
+// Both list RPCs answer success as soon as one object took the change and only
+// log the others (detailservice ModifyDetailsList, SetDetailsList), so the
+// answer says nothing about the rest: hence the read-back.
+func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectIDs []string, ops []DetailOperation) (DetailCheck, error) {
 	if len(objectIDs) == 0 {
-		return errors.New("object_ids is required")
+		return DetailCheck{}, errors.New("object_ids is required")
 	}
 	if len(ops) == 0 {
-		return errors.New("operations is required")
+		return DetailCheck{}, errors.New("operations is required")
 	}
 	// The RPC writes details straight into the object and heart validates the
 	// key against the space index, which knows only the internal spelling. A
@@ -425,12 +471,15 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 	// spellings differ.
 	keys, err := c.loadRelationKeys(ctx, spaceID)
 	if err != nil {
-		return err
+		return DetailCheck{}, err
 	}
 	modelOps := make([]*pb.RpcObjectListModifyDetailValuesRequestOperation, 0, len(ops))
+	var removals []*model.Detail
+	resolved := make([]string, len(ops))
+	removed := map[string]bool{}
 	for i, op := range ops {
 		if strings.TrimSpace(op.PropertyKey) == "" {
-			return fmt.Errorf("operations[%d]: property_key is required", i)
+			return DetailCheck{}, fmt.Errorf("operations[%d]: property_key is required", i)
 		}
 		// At least one, deliberately not exactly one. heart
 		// (core/block/detailservice/service.go, ModifyDetailsList) gives every
@@ -439,11 +488,17 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 		// one operation is therefore a working tag swap, not a mistake, and
 		// rejecting it here would remove a feature rather than prevent a bug.
 		if !op.HasAdd && !op.HasRemove && !op.HasSet {
-			return fmt.Errorf("operations[%d]: pass add, remove or set", i)
+			return DetailCheck{}, fmt.Errorf("operations[%d]: pass add, remove or set", i)
 		}
 		relationKey, err := keys.resolve(op.PropertyKey)
 		if err != nil {
-			return fmt.Errorf("operations[%d]: %w", i, err)
+			return DetailCheck{}, fmt.Errorf("operations[%d]: %w", i, err)
+		}
+		resolved[i] = relationKey
+		if op.HasSet && op.Set == nil {
+			removals = append(removals, &model.Detail{Key: relationKey, Value: toProtoValue(nil)})
+			removed[relationKey] = true
+			continue
 		}
 		entry := &pb.RpcObjectListModifyDetailValuesRequestOperation{RelationKey: relationKey}
 		if op.HasAdd {
@@ -457,17 +512,39 @@ func (c *Client) ModifyDetailValues(ctx context.Context, spaceID string, objectI
 		}
 		modelOps = append(modelOps, entry)
 	}
+	// The two RPCs run one after the other, so an order between a removal and
+	// another operation on the same key would be lost.
+	for i, op := range ops {
+		if removed[resolved[i]] && !(op.HasSet && op.Set == nil) {
+			return DetailCheck{}, fmt.Errorf("operations[%d]: %s is also removed (set null) in this call; null removes the property, so pass it alone", i, op.PropertyKey)
+		}
+	}
 
-	callCtx, cancel := c.contextWithAuth(ctx)
-	defer cancel()
-	resp, err := c.rpc.ObjectListModifyDetailValues(callCtx, &pb.RpcObjectListModifyDetailValuesRequest{
-		ObjectIds: objectIDs, Operations: modelOps,
-	})
-	if err != nil {
-		return fmt.Errorf("gRPC ObjectListModifyDetailValues failed: %w", err)
+	if len(modelOps) > 0 {
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, err := c.rpc.ObjectListModifyDetailValues(callCtx, &pb.RpcObjectListModifyDetailValuesRequest{
+			ObjectIds: objectIDs, Operations: modelOps,
+		})
+		cancel()
+		if err != nil {
+			return DetailCheck{}, fmt.Errorf("gRPC ObjectListModifyDetailValues failed: %w", err)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcObjectListModifyDetailValuesResponseError_NULL {
+			return DetailCheck{}, fmt.Errorf("ObjectListModifyDetailValues error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
 	}
-	if resp.Error != nil && resp.Error.Code != pb.RpcObjectListModifyDetailValuesResponseError_NULL {
-		return fmt.Errorf("ObjectListModifyDetailValues error (%s): %s", resp.Error.Code, resp.Error.Description)
+	if len(removals) > 0 {
+		callCtx, cancel := c.contextWithAuth(ctx)
+		resp, err := c.rpc.ObjectListSetDetails(callCtx, &pb.RpcObjectListSetDetailsRequest{
+			ObjectIds: objectIDs, Details: removals,
+		})
+		cancel()
+		if err != nil {
+			return DetailCheck{}, fmt.Errorf("gRPC ObjectListSetDetails failed: %w", err)
+		}
+		if resp.Error != nil && resp.Error.Code != pb.RpcObjectListSetDetailsResponseError_NULL {
+			return DetailCheck{}, fmt.Errorf("ObjectListSetDetails error (%s): %s", resp.Error.Code, resp.Error.Description)
+		}
 	}
-	return nil
+	return c.checkDetails(ctx, spaceID, objectIDs, detailExpectations(ops, resolved))
 }

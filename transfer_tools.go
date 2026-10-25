@@ -82,7 +82,7 @@ func (s *mcpServer) transferToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "object-versions",
-			"description": "List an object's version history, newest first. This is Anytype's stored history and is independent of object-undo: it survives restarts and reaches back much further than the undo stack.",
+			"description": "List an object's version history, newest first, with each version's author (member name). by_this_account marks versions written with the account this server uses; the others came from members' own apps. This is Anytype's stored history and is independent of object-undo: it survives restarts and reaches back much further than the undo stack.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":          spaceIDProp(),
 				"object_id":         strProp("Object whose history to list."),
@@ -140,7 +140,7 @@ func (s *mcpServer) transferToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "objects-modify-property",
-			"description": "Add to, remove from or overwrite one property across many objects in a single call. add and remove work WITHOUT reading first, which makes them the right way to tag or untag a batch: read-modify-write on each object would be slower and could discard a concurrent change. " + relationKeySpellingNote,
+			"description": "Add to, remove from or overwrite one property across many objects in a single call, then read every object back: updated is true only when all of them hold the change, verified counts those that do, mismatches name the others (unverified: not found to read back). add and remove work WITHOUT reading first, which makes them the right way to tag or untag a batch: read-modify-write on each object would be slower and could discard a concurrent change. " + relationKeySpellingNote,
 			"inputSchema": restSchema([]string{"space_id", "object_ids", "operations"}, map[string]any{
 				"space_id": spaceIDProp(),
 				"object_ids": map[string]any{
@@ -157,7 +157,7 @@ func (s *mcpServer) transferToolDefs() []any {
 							"property_key": strProp("Property key, e.g. \"tag\", from list-properties. " + relationKeySpellingNote),
 							"add":          map[string]any{"description": "Value(s) to add to a multi-value property. " + modifyShapeNote},
 							"remove":       map[string]any{"description": "Value(s) to remove from a multi-value property. " + modifyShapeNote},
-							"set":          map[string]any{"description": "Value to overwrite the property with, replacing whatever is there. Unlike add/remove this works for single-value formats too: a string for text/url/email/phone/select, a number for number, true/false for checkbox, an RFC3339 datetime or YYYY-MM-DD for date, an array for multi_select/objects/files, and null to clear. " + modifyShapeNote},
+							"set":          map[string]any{"description": "Value to overwrite the property with, replacing whatever is there. Unlike add/remove this works for single-value formats too: a string for text/url/email/phone/select, a number for number, true/false for checkbox, an RFC3339 datetime or YYYY-MM-DD for date, an array for multi_select/objects/files. null removes the property from the object, as the app's \"Remove from object\" does; \"\", [] or false leave it on the object, empty, where the app still shows it. null cannot be combined with other operations on the same key. " + modifyShapeNote},
 						},
 						"required": []any{"property_key"},
 					},
@@ -425,14 +425,34 @@ func (s *mcpServer) toolObjectVersions(args map[string]any) (map[string]any, err
 	if err != nil {
 		return nil, err
 	}
+	// heart leaves AuthorName empty; the author is a participant id.
+	var authors []string
+	seen := map[string]bool{}
+	for _, v := range versions {
+		if v.AuthorID != "" && !seen[v.AuthorID] {
+			seen[v.AuthorID] = true
+			authors = append(authors, v.AuthorID)
+		}
+	}
+	names := client.MemberNames(context.Background(), spaceID, authors)
 	out := make([]map[string]any, 0, len(versions))
 	for _, v := range versions {
 		entry := map[string]any{"id": v.ID}
 		if v.Time != "" {
 			entry["time"] = v.Time
 		}
-		if v.AuthorName != "" {
+		switch {
+		case names[v.AuthorID] != "":
+			entry["author"] = names[v.AuthorID]
+		case v.AuthorName != "":
 			entry["author"] = v.AuthorName
+		case v.AuthorID != "":
+			entry["author"] = v.AuthorID
+		}
+		// A participant id ends in the member's identity, which for this
+		// server's account is its account id.
+		if s.cfg.accountID != "" && strings.HasSuffix(v.AuthorID, "_"+s.cfg.accountID) {
+			entry["by_this_account"] = true
 		}
 		out = append(out, entry)
 	}
@@ -619,11 +639,20 @@ func (s *mcpServer) toolModifyProperty(args map[string]any) (map[string]any, err
 	}
 	defer client.Close()
 
-	if err := client.ModifyDetailValues(context.Background(), spaceID, objectIDs, ops); err != nil {
+	check, err := client.ModifyDetailValues(context.Background(), spaceID, objectIDs, ops)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	out := map[string]any{
 		"space_id": spaceID, "object_ids": objectIDs,
-		"operation_count": len(ops), "object_count": len(objectIDs), "updated": true,
-	}, nil
+		"operation_count": len(ops), "object_count": len(objectIDs),
+		"updated": check.Complete(), "verified": check.Verified,
+	}
+	if check.MismatchCount > 0 {
+		out["mismatches"], out["mismatch_count"] = check.Mismatches, check.MismatchCount
+	}
+	if check.UnverifiedCount > 0 {
+		out["unverified"], out["unverified_count"] = check.Unverified, check.UnverifiedCount
+	}
+	return out, nil
 }

@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.41.0"
+	serverVersion = "0.42.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -73,6 +73,7 @@ type serverConfig struct {
 	leanToolset     bool
 	unsplashKey     string
 	renderURL       string // API of the anytype-render daemon; empty: object-render reports it is not set up
+	accountID       string // identity of the account the token belongs to; empty: unknown
 }
 
 type messageFraming int
@@ -121,6 +122,7 @@ func main() {
 		leanToolset:     strings.EqualFold(getEnv("ANYTYPE_MCP_TOOLSET", "full"), "lean"),
 		unsplashKey:     strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
 		renderURL:       strings.TrimSpace(os.Getenv("ANYTYPE_RENDER_URL")),
+		accountID:       accountIDFromEnv(),
 	}
 
 	srv := &mcpServer{cfg: cfg}
@@ -1313,4 +1315,24 @@ func getEnv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// accountIDFromEnv names the account this server writes as: ANYTYPE_ACCOUNT_ID,
+// or the accountId anytype-cli keeps in its config, which the launcher mounts
+// read-only (the file holds secrets as well; only this one field is read).
+func accountIDFromEnv() string {
+	if id := strings.TrimSpace(os.Getenv("ANYTYPE_ACCOUNT_ID")); id != "" {
+		return id
+	}
+	raw, err := os.ReadFile(getEnv("ANYTYPE_CLI_CONFIG", "/root/.anytype/config.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		AccountID string `json:"accountId"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.AccountID)
 }

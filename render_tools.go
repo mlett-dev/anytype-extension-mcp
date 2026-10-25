@@ -66,12 +66,13 @@ func (s *mcpServer) renderToolDefs() []any {
 				"type":        "integer",
 				"description": fmt.Sprintf("Window width in px, %d-%d. Defaults to %d. Page text stays about 700 px wide unless the type uses full width.", minRenderWidth, maxRenderWidth, defaultRenderWidth),
 			},
-			"theme":          enumProp("Defaults to light.", []string{"light", "dark"}),
-			"expand_toggles": map[string]any{"type": "boolean", "description": "Show every toggle and toggle heading open. Defaults to false, as a page first opens.", "default": false},
-			"full_height":    map[string]any{"type": "boolean", "description": "Capture the whole object instead of the first screen. Defaults to true.", "default": true},
-			"all_rows":       map[string]any{"type": "boolean", "description": fmt.Sprintf("Press Load more in embedded views until every row shows, up to %d per view. Defaults to false.", renderRowCap), "default": false},
-			"image":          map[string]any{"type": "boolean", "description": "false returns the layout report only, without an image. Defaults to true.", "default": true},
-			"show_filters":   map[string]any{"type": "boolean", "description": "Open the filter and sort bar of every query or collection view, as its filter button does, so the image shows each filter. Defaults to false.", "default": false},
+			"theme":           enumProp("Defaults to light.", []string{"light", "dark"}),
+			"expand_toggles":  map[string]any{"type": "boolean", "description": "Show every toggle and toggle heading open. Defaults to false, as a page first opens.", "default": false},
+			"full_height":     map[string]any{"type": "boolean", "description": "Capture the whole object instead of the first screen. Defaults to true.", "default": true},
+			"all_rows":        map[string]any{"type": "boolean", "description": fmt.Sprintf("Press Load more in embedded views until every row shows, up to %d per view. Defaults to false.", renderRowCap), "default": false},
+			"image":           map[string]any{"type": "boolean", "description": "false returns the layout report only, without an image. Defaults to true.", "default": true},
+			"show_filters":    map[string]any{"type": "boolean", "description": "Open the filter and sort bar of every query or collection view, as its filter button does, so the image shows each filter. Defaults to false.", "default": false},
+			"show_properties": map[string]any{"type": "boolean", "description": "Open the properties panel, as the info button does, with Hidden and Local open; the report lists every property there by section with key and value. Local lists each key the object holds that its type does not, empty ones too: null marks a key kept with no value, which objects-modify-property set null removes. Defaults to false.", "default": false},
 			"views": map[string]any{
 				"type": "array",
 				"description": "Show other views than the active ones, as a click on the view tab does, without saving the switch. " +
@@ -151,6 +152,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	allRows := optionalBool(args, "all_rows", false)
 	wantImage := optionalBool(args, "image", true)
 	showFilters := optionalBool(args, "show_filters", false)
+	showProperties := optionalBool(args, "show_properties", false)
 	views, err := renderViews(args)
 	if err != nil {
 		return nativeToolResult{}, err
@@ -161,7 +163,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 		return nativeToolResult{}, err
 	}
 	viewsKey, _ := json.Marshal(views)
-	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%t|%s|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, showFilters, viewsKey, fingerprint)
+	key := fmt.Sprintf("%s|%s|%d|%s|%s|%t|%t|%t|%t|%t|%t|%s|%s", spaceID, objectID, width, theme, format, expand, fullHeight, allRows, wantImage, showFilters, showProperties, viewsKey, fingerprint)
 	now := time.Now()
 	if memo, ok := s.recentRender(key, now); ok {
 		s.note("reused", "render")
@@ -177,6 +179,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 		"space_id": spaceID, "object_id": objectID, "width": width, "theme": theme,
 		"format": format, "full_height": fullHeight, "expand_ids": expandIDs,
 		"all_rows": allRows, "image": wantImage, "views": views, "show_filters": showFilters,
+		"show_properties": showProperties,
 	})
 	if err != nil {
 		return nativeToolResult{}, err
@@ -361,6 +364,11 @@ func hiddenContent(r renderResponse, blocks []anytypefiles.BlockInfo, fullHeight
 	if clipped, _ := r.Layout["clipped_blocks"].([]any); len(clipped) > 0 {
 		reasons = append(reasons, fmt.Sprintf("text blocks running past the side: %d", len(clipped)))
 	}
+	if panel, _ := r.Layout["properties_panel"].(map[string]any); panel != nil {
+		if closed, _ := panel["closed"].([]any); len(closed) > 0 {
+			reasons = append(reasons, fmt.Sprintf("properties panel groups that stayed closed: %d", len(closed)))
+		}
+	}
 	return reasons
 }
 
@@ -460,9 +468,11 @@ func (s *mcpServer) callRenderer(request map[string]any) (renderResponse, error)
 	return out, nil
 }
 
-// renderInputs reads the object once: a fingerprint of its blocks for the
-// repeat check, and the blocks themselves, for the toggles. Reading it also
-// turns a wrong id into an error before the browser starts.
+// renderInputs reads the object: a fingerprint of its blocks and properties
+// for the repeat check, and the blocks themselves, for the toggles. Reading it
+// also turns a wrong id into an error before the browser starts. Properties
+// count because the page shows some of them and the panel all of them; the
+// last-opened date and sync state change with every render and do not.
 func (s *mcpServer) renderInputs(spaceID, objectID string) (string, []anytypefiles.BlockInfo, error) {
 	client, err := s.grpcClient()
 	if err != nil {
@@ -473,7 +483,16 @@ func (s *mcpServer) renderInputs(spaceID, objectID string) (string, []anytypefil
 	if err != nil {
 		return "", nil, err
 	}
-	encoded, err := json.Marshal(blocks)
+	details, err := client.ReadDetails(context.Background(), spaceID, objectID)
+	if err != nil {
+		return "", nil, err
+	}
+	for key := range details {
+		if strings.HasPrefix(key, "lastOpened") || strings.HasPrefix(key, "sync") {
+			delete(details, key)
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{"blocks": blocks, "details": details})
 	if err != nil {
 		return "", nil, err
 	}

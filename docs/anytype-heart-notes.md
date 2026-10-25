@@ -960,3 +960,11 @@ raw `EventMessage`s — heart's internal event union with over a hundred variant
 several of which would have to be interpreted before anything could be said. Two
 `ShowVersion` calls give the same answer in terms the caller already knows:
 blocks added, removed, or changed in text.
+
+## A null value is not a removal (ObjectListModifyDetailValues)
+
+`ObjectListModifyDetailValues` with `set: null` stores the key with a null value instead of deleting it. REST leaves null values out, so the property looks gone, but the app's properties panel lists every key an object holds under "Local", empty or not, and shows it as an empty field there. `ObjectListSetDetails` with null deletes the key (`basic.applyDetailUpdates`) and refuses internal keys such as `type`; the app's "Remove from object" uses `ObjectRelationDelete`, which has no such guard. `objects-modify-property` therefore sends a null `set` through `ObjectListSetDetails`.
+
+## List RPCs report success when one object succeeded
+
+`ObjectListModifyDetailValues` and `ObjectListSetDetails` (`detailservice.ModifyDetailsList` / `SetDetailsList`) return no error as soon as one object took the change; failures of the others are only logged at WARN level. `objects-modify-property` reads every object back from the index afterwards (heart indexes before the RPC returns) and reports `verified`, `mismatches` and `unverified`.

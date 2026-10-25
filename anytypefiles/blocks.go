@@ -432,6 +432,32 @@ func (c *Client) ReadBlocks(ctx context.Context, spaceID, objectID string) ([]Bl
 	return blocks, view.GetRootId(), nil
 }
 
+// ReadDetails returns the object's own details as ObjectShow reports them,
+// keys holding null included, which REST leaves out.
+func (c *Client) ReadDetails(ctx context.Context, spaceID, objectID string) (map[string]any, error) {
+	callCtx, cancel := c.contextWithAuth(ctx)
+	defer cancel()
+	resp, err := c.rpc.ObjectShow(callCtx, &pb.RpcObjectShowRequest{
+		SpaceId: spaceID, ObjectId: objectID, ContextId: objectID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gRPC ObjectShow failed: %w", err)
+	}
+	if resp.Error != nil && resp.Error.Code != pb.RpcObjectShowResponseError_NULL {
+		return nil, fmt.Errorf("ObjectShow error (%s): %s", resp.Error.Code, resp.Error.Description)
+	}
+	out := map[string]any{}
+	for _, d := range resp.GetObjectView().GetDetails() {
+		if d.GetId() != objectID {
+			continue
+		}
+		for key, value := range d.GetDetails().GetFields() {
+			out[key] = fromProtoValue(value)
+		}
+	}
+	return out, nil
+}
+
 // CreateTextBlock inserts a text block relative to targetID and returns its id.
 // An empty targetID appends to the end of the object.
 func (c *Client) CreateTextBlock(ctx context.Context, objectID, targetID, position, style, text string, checked bool, marks []MarkSpec) (string, error) {
