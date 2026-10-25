@@ -441,9 +441,18 @@ def run(s):
             "dueDate" in text,
             definitions[tool]["description"][-80:],
         )
+    # The operator is offered only as the switch that makes an entry a group:
+    # and/or together with nested_filters. "no" or an operator on a single
+    # filter must stay impossible to choose (refused above when sent anyway).
     for tool in ("query-filter-add", "query-view-create", "query-view-update"):
+        schema = str(definitions[tool]["inputSchema"])
         s.check(
-            f"{tool} no longer offers a filter operator",
-            "operator" not in str(definitions[tool]["inputSchema"]),
+            f"{tool} offers an operator only for groups (and/or with nested_filters)",
+            "nested_filters" in schema and "'enum': ['and', 'or']" in schema and "'no'" not in schema,
             tool,
         )
+    s.check(
+        "query-filter-add names the app's labels for the conditions",
+        "Contains any" in str(definitions["query-filter-add"]["inputSchema"]),
+        definitions["query-filter-add"]["inputSchema"]["properties"]["condition"].get("description"),
+    )

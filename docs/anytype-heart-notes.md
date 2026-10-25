@@ -165,9 +165,50 @@ any-store's `query.And{}`. An empty OR is worse than inconsistent: heart answers
 `true`, any-store `false`. Either way the filter constrains nothing while the
 write reports success.
 
-Anytype always joins a view's filters with AND. The field is gone from the
-schemas; a value supplied anyway is rejected with a reason. `query-inspect`
-reports already-stored filters that carry an operator under `warnings`.
+A view's top-level filters join with AND. OR exists only as a group: the app's
+"advanced filter" (anytype-ts v0.56) stores one entry with `Operator` And or Or,
+no key, condition or value, and its rules in `NestedFilters`; a rule can itself
+be a group. The tools offer `operator` only together with `nested_filters`; an
+operator on a single filter is still refused, and `query-inspect` reports a
+stored one without nested filters under `warnings`.
+
+### The app is the measure for filters, not heart
+
+heart stores and applies any filter literally. The app does not (anytype-ts
+v0.56.1, `lib/dataview.ts` `getData`, `lib/relation.ts`):
+
+- It drops every filter `isFilterActive` rejects before querying: condition
+  `None`, a missing or empty value (`""`, `[]`, `null`), `Exists` (it has no
+  value), and any filter or sort on a deleted or archived property.
+- `filterMapper` takes the format from the property, coerces the value
+  (`formatValue`: a number from `"5"`, a list from a single id, a date through
+  `parseFloat`, so `"2026-10-25"` becomes 2026 seconds after 1970) and sets
+  `includeTime` to false.
+
+The REST list endpoint applies the stored filter as it is. Measured in one live
+test: `in []` gave 6 rows in the app and 0 through REST, `"5"` 2 and 0,
+`include_time: true` 1 and 0, a filter on an archived property 4 and 1. The
+tools therefore write what the app would write: format from the property,
+values coerced, tag names resolved to ids, ISO dates converted to Unix seconds
+(a date without time is UTC midnight, the day heart computes in the UTC
+container), `include_time` never set, and a new filter that would filter nothing
+refused. `query-inspect` warns about stored filters the app ignores.
+
+### Quick options make a date filter relative
+
+`QuickOption` (Today, This week, Number of days ago …) is turned into a date
+range by heart when the query runs (`pkg/lib/database/quickoptions.go`), so the
+filter follows the calendar. A periodic option ignores the value (the app stores
+0); `NumberOfDaysAgo`/`Now` read it as days. Before the tools modelled the field,
+reading a "Today" filter showed `equal 0`, and writing it back stored "equal
+1970-01-01" with success reported.
+
+### Changing filters or sorts clears the manual row order
+
+`AddFilter`, `RemoveFilters`, `AddSort` and `RemoveSorts` in
+`core/block/simple/dataview/views.go` all call `resetObjectOrderForView`. Every
+filter or sort write therefore drops an order set with `query-order-set`, in
+the app as well.
 
 ### "This Object" is a magic string, not a missing feature
 

@@ -28,7 +28,19 @@ const relationKeySpellingNote = "Both spellings of a property key work: the one 
 // format to use.
 const filterFormatNote = "A dataview stores its own spelling of a format, and query-inspect reports that one: object, status, longtext and tag where list-properties says objects, select, text and multi_select. Both spellings are accepted here, so a filter that was just read can be written straight back. Where the two differ they mean the same thing, with one exception: text and longtext are genuinely different formats, short and long, and are not interchangeable."
 
-const queryFilterValueDescription = "Filter value, typed to match the property format: boolean for checkbox, number for number, string for text/url/email/phone, ISO 8601 string for date, tag id for select, array of tag ids for multi_select, array of object ids for object relations. Omit for the empty, not_empty and exists conditions.\n\n" + selfFilterNote
+const queryFilterValueDescription = "Filter value for the property's format: true/false for checkbox, a number for number, a string for text/url/email/phone, Unix seconds or an ISO 8601 date for date (2026-10-25 is midnight UTC; with quick_option number_of_days_ago/now the number of days), tag ids or names for select/multi_select, object ids for object properties. A single id needs no list. Omit for empty and not_empty. A filter without a value filters nothing in the app and is refused.\n\n" + selfFilterNote
+
+// filterConditionNote names the app's labels for the conditions, so a caller
+// asked for "Contains any" or "Doesn't contain" does not have to guess. The
+// app shows the same "Doesn't contain" for not_in and not_like.
+const filterConditionNote = "Filter condition. In the app: in = Contains any, all_in = Contains all, not_in = Doesn't contain (select, multi_select, objects); like = Contains, not_like = Doesn't contain (text); equal = Is, not_equal = Is not; for dates less = before, greater = after, less_or_equal/greater_or_equal = on or before/after, in = Is within (with a quick_option period)."
+
+const filterQuickOptionNote = "Relative date, as the app's Today, This week or Number of days ago: the filter follows the calendar. Periods (today … next_year) need no value; number_of_days_ago/now take the number of days as value. Date properties only."
+
+// filterGroupNote describes the app's advanced filter.
+const filterGroupNote = "Without a group the filters of a view combine with AND. For OR, add a group, the app's advanced filter: operator and/or with the rules in nested_filters and no property_key or condition of its own. A view holds one group."
+
+const filterFormatShortNote = "Optional: taken from the property. If given it must fit the property's format. " + filterFormatNote
 
 // selfFilterNote documents the one filter value that is not a value at all.
 //
@@ -64,27 +76,55 @@ func resolveDataviewBlock(client *anytypefiles.Client, spaceID, objectID, given 
 	return info.BlockID, nil
 }
 
-func filterSpecSchema() map[string]any {
+// filterRuleProps are the fields of one filter. The rules inside a group take
+// the same fields with short descriptions: the full texts are already in the
+// schema once, and every copy costs context in each request.
+func filterRuleProps() map[string]any {
+	return map[string]any{
+		"property_key": strProp("Property key to filter on, e.g. \"done\" or \"due_date\". This is the key from list-properties, not the bafyrei... id. " + relationKeySpellingNote),
+		"condition":    enumProp(filterConditionNote, anytypefiles.FilterConditionNames()),
+		"value":        map[string]any{"description": queryFilterValueDescription},
+		"format":       enumProp(filterFormatShortNote, anytypefiles.FilterFormatNames()),
+		"quick_option": enumProp(filterQuickOptionNote, anytypefiles.FilterQuickOptionNames()),
+		"operator":     enumProp("Makes this entry a group of nested_filters, combined with and or or.", []string{"and", "or"}),
+	}
+}
+
+// nestedRuleSchema is one rule inside a group; a rule can be a group itself,
+// and the server checks every level.
+func nestedRuleSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"property_key": strProp("Property key to filter on, e.g. \"done\" or \"due_date\". This is the key from list-properties, not the bafyrei... id. " + relationKeySpellingNote),
-			"condition":    enumProp("Filter condition.", anytypefiles.FilterConditionNames()),
-			"value":        map[string]any{"description": queryFilterValueDescription},
-			"format":       enumProp("Property format. Helps Anytype interpret the value; recommended for date and tag filters. "+filterFormatNote, anytypefiles.FilterFormatNames()),
-			"include_time": map[string]any{"type": "boolean", "description": "For date filters: compare time of day as well.", "default": false},
+			"property_key":   strProp("Property key."),
+			"condition":      enumProp("Filter condition.", anytypefiles.FilterConditionNames()),
+			"value":          map[string]any{"description": "Value, as for a single filter."},
+			"quick_option":   enumProp("Relative date.", anytypefiles.FilterQuickOptionNames()),
+			"operator":       enumProp("Makes this rule a nested group.", []string{"and", "or"}),
+			"nested_filters": map[string]any{"type": "array", "description": "Rules of a nested group.", "items": map[string]any{"type": "object"}},
 		},
-		"required": []any{"property_key", "condition"},
 	}
+}
+
+func filterSpecSchema() map[string]any {
+	props := filterRuleProps()
+	props["id"] = strProp("Id of a stored filter, from query-inspect. Keep it when writing a list back, so the filter keeps its id.")
+	props["nested_filters"] = map[string]any{
+		"type":        "array",
+		"description": "The rules of a group (operator and/or).",
+		"items":       nestedRuleSchema(),
+	}
+	return map[string]any{"type": "object", "properties": props}
 }
 
 func sortSpecSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"id":              strProp("Id of a stored sort, from query-inspect. Keep it when writing a list back."),
 			"property_key":    strProp("Property key to sort by. " + relationKeySpellingNote),
-			"direction":       enumProp("Sort direction.", []string{"asc", "desc", "custom"}),
-			"format":          enumProp("Property format. "+filterFormatNote, anytypefiles.FilterFormatNames()),
+			"direction":       enumProp("Sort direction. A hand-made row order is query-order-set.", []string{"asc", "desc"}),
+			"format":          enumProp("Optional: taken from the property.", anytypefiles.FilterFormatNames()),
 			"include_time":    map[string]any{"type": "boolean", "description": "For date sorts: take time of day into account.", "default": false},
 			"empty_placement": enumProp("Where objects with an empty value go.", []string{"not_specified", "start", "end"}),
 		},
@@ -110,7 +150,7 @@ func viewConfigProps() map[string]any {
 		"layout": enumProp("View layout. The REST API reports the table layout as \"grid\". A new view without a layout is a table; on an update, omitting it keeps the layout the view has.", anytypefiles.ViewLayoutNames()),
 		"filters": map[string]any{
 			"type":        "array",
-			"description": "Filters of the view. They all have to match: anytype combines the filters of one view with AND and offers no OR between them. " + selfFilterNote,
+			"description": "Filters of the view. " + filterGroupNote,
 			"items":       filterSpecSchema(),
 		},
 		"sorts": map[string]any{
@@ -188,7 +228,7 @@ func (s *mcpServer) queryToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "query-view-update",
-			"description": "Change an existing view. Only the fields you pass are written: name, layout, grouping and every other setting you omit keeps its stored value, so a call that changes just the columns cannot rename the view or turn a kanban into a table. Declarative for filters and sorts: a list you pass REPLACES the current one entirely, so pass the complete desired set; a list you omit is left untouched, and an empty array clears it. Use query-filter-add / query-sort-add to add a single entry without restating the rest.",
+			"description": "Change an existing view. Only the fields you pass are written: name, layout, grouping and every other setting you omit keeps its stored value, so a call that changes just the columns cannot rename the view or turn a kanban into a table. Declarative for filters and sorts: a list you pass REPLACES the current one entirely, so pass the complete desired set; a list you omit is left untouched, and an empty array clears it. Every entry is checked before anything is written, so a refused entry changes nothing. Keep each stored entry's id when writing a list back. Writing filters or sorts clears a manual row order of the view (query-order-set), as in the app. Use query-filter-add / query-sort-add to add a single entry without restating the rest.",
 			"inputSchema": restSchema([]string{"space_id", "object_id", "view_id"}, mergeProps(map[string]any{
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Query or collection object id."),
@@ -220,18 +260,18 @@ func (s *mcpServer) queryToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "query-filter-add",
-			"description": "Add one filter to a view, keeping the existing filters. " + selfFilterNote + "\n\nThe filters of a view always combine with AND — there is no operator to set, and anytype has no OR between the filters of one view. Filters reference properties by key, e.g. done or due_date. To filter on an object relation such as linked_projects, use condition=in and pass the target object ids as the value. " + relationKeySpellingNote,
-			"inputSchema": restSchema([]string{"space_id", "object_id", "view_id", "property_key", "condition"}, map[string]any{
-				"space_id":     spaceIDProp(),
-				"object_id":    strProp("Query or collection object id."),
-				"view_id":      strProp("View id from query-inspect."),
-				"property_key": strProp("Property key to filter on, from list-properties."),
-				"condition":    enumProp("Filter condition.", anytypefiles.FilterConditionNames()),
-				"value":        map[string]any{"description": queryFilterValueDescription},
-				"format":       enumProp("Property format. "+filterFormatNote, anytypefiles.FilterFormatNames()),
-				"include_time": map[string]any{"type": "boolean", "description": "For date filters: compare time of day as well.", "default": false},
-				"block_id":     strProp("Dataview block id. Optional; discovered automatically."),
-			}),
+			"description": "Add one filter to a view, keeping the existing ones, and return its id and the filter as stored. Pass property_key and condition for one filter, or operator with nested_filters for a group. " + filterGroupNote + " The format is taken from the property; values are converted as the app stores them (tag names to ids, ISO dates to Unix seconds). To filter on an object relation such as linked_projects, use condition=in with the target object ids. " + selfFilterNote + "\n\n" + relationKeySpellingNote,
+			"inputSchema": restSchema([]string{"space_id", "object_id", "view_id"}, mergeProps(map[string]any{
+				"space_id":  spaceIDProp(),
+				"object_id": strProp("Query or collection object id."),
+				"view_id":   strProp("View id from query-inspect."),
+				"nested_filters": map[string]any{
+					"type":        "array",
+					"description": "The rules of a group (operator and/or), each with property_key, condition and value.",
+					"items":       nestedRuleSchema(),
+				},
+				"block_id": strProp("Dataview block id. Optional; discovered automatically."),
+			}, filterRuleProps())),
 		},
 		map[string]any{
 			"name":        "query-filter-remove",
@@ -250,14 +290,14 @@ func (s *mcpServer) queryToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "query-sort-add",
-			"description": "Add one sort to a view, keeping the existing sorts. Sorts apply in the order they appear. " + relationKeySpellingNote,
+			"description": "Add one sort to a view, keeping the existing sorts, and return its id. Sorts apply in the order they appear. " + relationKeySpellingNote,
 			"inputSchema": restSchema([]string{"space_id", "object_id", "view_id", "property_key"}, map[string]any{
 				"space_id":        spaceIDProp(),
 				"object_id":       strProp("Query or collection object id."),
 				"view_id":         strProp("View id from query-inspect."),
 				"property_key":    strProp("Property key to sort by. " + relationKeySpellingNote),
-				"direction":       enumProp("Sort direction.", []string{"asc", "desc", "custom"}),
-				"format":          enumProp("Property format. "+filterFormatNote, anytypefiles.FilterFormatNames()),
+				"direction":       enumProp("Sort direction. A hand-made row order is query-order-set.", []string{"asc", "desc"}),
+				"format":          enumProp("Optional: taken from the property.", anytypefiles.FilterFormatNames()),
 				"include_time":    map[string]any{"type": "boolean", "description": "For date sorts: take time of day into account.", "default": false},
 				"empty_placement": enumProp("Where objects with an empty value go.", []string{"not_specified", "start", "end"}),
 				"block_id":        strProp("Dataview block id. Optional; discovered automatically."),
@@ -379,24 +419,35 @@ func (s *mcpServer) dispatchQueryTool(name string, args map[string]any) (map[str
 
 // --- argument parsing ----------------------------------------------------
 
+// filterSpecFromArgs reads one filter, or a group with its nested rules. What
+// is required depends on the kind, so the checks live in filterprep.go.
 func filterSpecFromArgs(args map[string]any) (anytypefiles.FilterSpec, error) {
-	key, err := requiredString(args, "property_key")
-	if err != nil {
-		return anytypefiles.FilterSpec{}, err
-	}
-	condition, err := requiredString(args, "condition")
-	if err != nil {
-		return anytypefiles.FilterSpec{}, err
-	}
-	return anytypefiles.FilterSpec{
+	spec := anytypefiles.FilterSpec{
 		ID:          optionalString(args, "id"),
-		RelationKey: key,
-		Condition:   condition,
+		RelationKey: optionalString(args, "property_key"),
+		Condition:   optionalString(args, "condition"),
 		Operator:    optionalString(args, "operator"),
 		Format:      optionalString(args, "format"),
 		Value:       args["value"],
-		IncludeTime: optionalBool(args, "include_time", false),
-	}, nil
+		QuickOption: optionalString(args, "quick_option"),
+	}
+	if raw, ok := args["nested_filters"]; ok && raw != nil {
+		items, err := asObjectSlice(raw)
+		if err != nil {
+			return spec, fmt.Errorf("nested_filters: %w", err)
+		}
+		for i, item := range items {
+			nested, err := filterSpecFromArgs(item)
+			if err != nil {
+				return spec, fmt.Errorf("nested_filters[%d]: %w", i, err)
+			}
+			spec.NestedFilters = append(spec.NestedFilters, nested)
+		}
+	}
+	if spec.RelationKey == "" && len(spec.NestedFilters) == 0 && spec.Operator == "" {
+		return spec, fmt.Errorf("pass property_key and condition for a filter, or operator and nested_filters for a group")
+	}
+	return spec, nil
 }
 
 func sortSpecFromArgs(args map[string]any) (anytypefiles.SortSpec, error) {
@@ -531,18 +582,40 @@ func setAPIKey(entry map[string]any, apiKey string) {
 	}
 }
 
+// filterEntry reports one filter in the spelling the write side takes, so a
+// list read here can be written back unchanged. A group reports its operator
+// and rules instead of a property and condition.
+func filterEntry(f anytypefiles.FilterSpec) map[string]any {
+	entry := map[string]any{"id": f.ID, "operator": f.Operator}
+	if f.RelationKey != "" || len(f.NestedFilters) == 0 {
+		entry["property_key"] = f.RelationKey
+		entry["condition"] = f.Condition
+		entry["format"] = f.Format
+		entry["value"] = f.Value
+		setAPIKey(entry, f.APIRelationKey)
+	}
+	if f.QuickOption != "" {
+		entry["quick_option"] = f.QuickOption
+	}
+	if len(f.NestedFilters) > 0 {
+		nested := make([]map[string]any, 0, len(f.NestedFilters))
+		for _, n := range f.NestedFilters {
+			nested = append(nested, filterEntry(n))
+		}
+		entry["nested_filters"] = nested
+	}
+	if f.ID == "" {
+		delete(entry, "id")
+	}
+	return entry
+}
+
 func dataviewResult(info *anytypefiles.DataviewInfo) map[string]any {
 	views := make([]map[string]any, 0, len(info.Views))
 	for _, v := range info.Views {
 		filters := make([]map[string]any, 0, len(v.Filters))
 		for _, f := range v.Filters {
-			entry := map[string]any{
-				"id": f.ID, "property_key": f.RelationKey, "condition": f.Condition,
-				"operator": f.Operator, "format": f.Format, "value": f.Value,
-				"include_time": f.IncludeTime,
-			}
-			setAPIKey(entry, f.APIRelationKey)
-			filters = append(filters, entry)
+			filters = append(filters, filterEntry(f))
 		}
 		sorts := make([]map[string]any, 0, len(v.Sorts))
 		for _, so := range v.Sorts {
@@ -842,13 +915,13 @@ func (s *mcpServer) toolQueryFilterAdd(args map[string]any) (map[string]any, err
 	}
 	defer client.Close()
 
-	if err := client.AddFilter(context.Background(), spaceID, objectID, blockID, viewID, spec); err != nil {
+	id, stored, err := client.AddFilter(context.Background(), spaceID, objectID, blockID, viewID, spec)
+	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"space_id": spaceID, "object_id": objectID, "view_id": viewID,
-		"property_key": spec.RelationKey, "condition": spec.Condition, "added": true,
-		"note": "call query-inspect to read back the generated filter id",
+		"filter_id": id, "filter": filterEntry(stored), "added": true,
 	}, nil
 }
 
@@ -867,7 +940,7 @@ func (s *mcpServer) toolQueryFilterRemove(args map[string]any) (map[string]any, 
 	}
 	defer client.Close()
 
-	if err := client.RemoveFilters(context.Background(), objectID, blockID, viewID, ids); err != nil {
+	if err := client.RemoveFilters(context.Background(), spaceID, objectID, blockID, viewID, ids); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -891,13 +964,13 @@ func (s *mcpServer) toolQuerySortAdd(args map[string]any) (map[string]any, error
 	}
 	defer client.Close()
 
-	if err := client.AddSort(context.Background(), spaceID, objectID, blockID, viewID, spec); err != nil {
+	id, err := client.AddSort(context.Background(), spaceID, objectID, blockID, viewID, spec)
+	if err != nil {
 		return nil, err
 	}
 	return map[string]any{
 		"space_id": spaceID, "object_id": objectID, "view_id": viewID,
-		"property_key": spec.RelationKey, "direction": spec.Type, "added": true,
-		"note": "call query-inspect to read back the generated sort id",
+		"sort_id": id, "property_key": spec.RelationKey, "direction": spec.Type, "added": true,
 	}, nil
 }
 
@@ -916,7 +989,7 @@ func (s *mcpServer) toolQuerySortRemove(args map[string]any) (map[string]any, er
 	}
 	defer client.Close()
 
-	if err := client.RemoveSorts(context.Background(), objectID, blockID, viewID, ids); err != nil {
+	if err := client.RemoveSorts(context.Background(), spaceID, objectID, blockID, viewID, ids); err != nil {
 		return nil, err
 	}
 	return map[string]any{

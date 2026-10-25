@@ -289,21 +289,10 @@ func (m *relationKeyMap) validateGrouping(view *model.BlockContentDataviewView) 
 }
 
 // applyToView translates every property key a view configuration carries.
+//
+// Filters and sorts are left to filterPrep, which resolves their keys together
+// with everything else it checks (and walks into filter groups).
 func (m *relationKeyMap) applyToView(spec *ViewSpec) error {
-	for i := range spec.Filters {
-		key, err := m.resolve(spec.Filters[i].RelationKey)
-		if err != nil {
-			return fmt.Errorf("filters[%d]: %w", i, err)
-		}
-		spec.Filters[i].RelationKey = key
-	}
-	for i := range spec.Sorts {
-		key, err := m.resolve(spec.Sorts[i].RelationKey)
-		if err != nil {
-			return fmt.Errorf("sorts[%d]: %w", i, err)
-		}
-		spec.Sorts[i].RelationKey = key
-	}
 	for i := range spec.Relations {
 		key, err := m.resolve(spec.Relations[i].Key)
 		if err != nil {

@@ -108,8 +108,14 @@ def run(s):
     # nothing; show_filters opens the bar that shows both.
     s.c.call("query-filter-add", space_id=s.space_id, object_id=host, view_id=listed_view(s, host),
              property_key="name", condition="like", value="eintrag")
-    s.c.call("query-filter-add", space_id=s.space_id, object_id=host, view_id=listed_view(s, host),
-             property_key="description", condition="equal", value="")
+    # A new filter without a value is refused, since it would filter nothing.
+    # The app leaves such filters behind when a stored one loses its value, and
+    # that is how this one is made: added with a value, then emptied by id.
+    emptied = s.c.call("query-filter-add", space_id=s.space_id, object_id=host, view_id=listed_view(s, host),
+                       property_key="description", condition="equal", value="x")["filter_id"]
+    stored = s.c.call("query-inspect", space_id=s.space_id, object_id=host)["views"][0]["filters"]
+    s.c.call("query-view-update", space_id=s.space_id, object_id=host, view_id=listed_view(s, host),
+             filters=[dict(f, value="") if f["id"] == emptied else f for f in stored])
     s.settle(2)
     bar = s.c.call("object-render", space_id=s.space_id, object_id=host, image=False, show_filters=True)
     dv = ((bar.get("layout") or {}).get("dataviews") or [{}])[0]

@@ -111,6 +111,35 @@ filter that silently matches everything. Most of the roundabout-looking choices
 in this server trace back to an entry there, and the entries are expensive to
 rediscover.
 
+## Filters and sorts
+
+Filters are written the way the Anytype app writes them, so a view shows the
+same rows in the app and through `get-list-objects-compact`: the format comes
+from the property, values are converted (tag names to ids, `"5"` to 5, ISO dates
+to Unix seconds, a date without time being midnight UTC), and a new filter that
+would filter nothing (`in []`, no value, `exists`) is refused.
+
+| App label | condition |
+|---|---|
+| Contains any / Contains all / Doesn't contain (select, tags, objects) | `in` / `all_in` / `not_in` |
+| Contains / Doesn't contain (text) | `like` / `not_like` |
+| Is / Is not | `equal` / `not_equal` |
+| before / after / on or before / on or after (dates) | `less` / `greater` / `less_or_equal` / `greater_or_equal` |
+| Is within (dates, with a period) | `in` + `quick_option` |
+
+- `quick_option` makes a date filter relative: `today`, `current_week`,
+  `number_of_days_ago` (value: days) and the rest of the app's options.
+- OR is a group, the app's advanced filter: `operator` `and`/`or` with the
+  rules in `nested_filters`. A view holds one group; its top-level filters join
+  with AND.
+- `query-view-update` checks every filter and sort before writing any, so a
+  refused entry changes nothing. `query-inspect` returns ids, quick options and
+  groups, and writing that list back is lossless.
+- `query-filter-add` and `query-sort-add` return the new id; removing an id the
+  view does not have is refused.
+- Any filter or sort change clears a manual row order (`query-order-set`), in
+  the app as well.
+
 ## IDs, not keys, in path parameters
 
 `property_id`, `type_id` and `tag_id` require the `bafyrei…` ID, **not** the

@@ -38,11 +38,18 @@ type FilterSpec struct {
 	// read-modify-write round trip, while changing property_key's meaning would
 	// silently break every caller that feeds it back somewhere else.
 	APIRelationKey string `json:"api_property_key,omitempty"`
-	Condition      string `json:"condition"`
-	Operator       string `json:"operator,omitempty"`
-	Format         string `json:"format,omitempty"`
-	Value          any    `json:"value,omitempty"`
-	IncludeTime    bool   `json:"include_time,omitempty"`
+	Condition      string `json:"condition,omitempty"`
+	// Operator is "no" on an ordinary filter. "and" or "or" make the entry a
+	// group: it then has no property, condition or value of its own and
+	// combines NestedFilters instead — the app's "advanced filter".
+	Operator      string       `json:"operator,omitempty"`
+	Format        string       `json:"format,omitempty"`
+	Value         any          `json:"value,omitempty"`
+	QuickOption   string       `json:"quick_option,omitempty"`
+	NestedFilters []FilterSpec `json:"nested_filters,omitempty"`
+	// There is deliberately no include_time. The app forces it to false on
+	// every filter before querying (lib/dataview.ts getData), so a stored true
+	// only made the REST result differ from what the app shows.
 }
 
 // SortSpec is the JSON-friendly form of a dataview sort.
@@ -296,7 +303,7 @@ var filterOperators = map[string]model.BlockContentDataviewFilterOperator{
 }
 
 // filterOperatorRefusal explains the rejection where the caller will read it.
-const filterOperatorRefusal = "filter operator %q is not supported: anytype stores it as a filter GROUP, which drops the property, condition and value of this filter and leaves it matching everything. Omit the operator — filters of a view are combined with AND"
+const filterOperatorRefusal = "filter operator %q on a single filter is not supported: anytype reads an operator as a filter GROUP, which drops the property, condition and value of this filter and leaves it matching everything. Omit the operator (the filters of a view combine with AND), or build a group: operator and/or with the rules in nested_filters"
 
 // brokenFilterOperator reports a stored filter that was written with an
 // operator and has no nested filters, i.e. one that cannot match as intended.
@@ -376,9 +383,11 @@ func FilterFormatNames() []string {
 
 // FilterConditionNames lists the accepted filter conditions, for tool schemas.
 func FilterConditionNames() []string {
+	// exists is left out: the app does not apply it, so it filters nothing
+	// there while REST applies it. It is still read and written back.
 	return []string{"equal", "not_equal", "greater", "less", "greater_or_equal",
 		"less_or_equal", "like", "not_like", "in", "not_in", "empty", "not_empty",
-		"all_in", "not_all_in", "exact_in", "not_exact_in", "exists"}
+		"all_in", "not_all_in", "exact_in", "not_exact_in"}
 }
 
 // canonicalNames inverts a lookup table so a stored enum can be reported in the
@@ -539,7 +548,39 @@ func fromProtoValue(v *types.Value) any {
 	return nil
 }
 
-func (f FilterSpec) toModel() (*model.BlockContentDataviewFilter, error) {
+// toModel converts a prepared filter (see filterprep.go) into the stored
+// struct. base, when given, is the filter of the same id already stored: the
+// result is written onto a copy of it, so a field of the struct this code does
+// not model is kept rather than reset — heart replaces the whole filter.
+func (f FilterSpec) toModel(base *model.BlockContentDataviewFilter) (*model.BlockContentDataviewFilter, error) {
+	op := strings.ToLower(strings.TrimSpace(f.Operator))
+	if group, ok := filterGroupOperators[op]; ok {
+		if len(f.NestedFilters) == 0 {
+			return nil, fmt.Errorf("a filter group with operator %s needs nested_filters", op)
+		}
+		out := cloneFilter(base)
+		if out == nil {
+			out = &model.BlockContentDataviewFilter{}
+		}
+		out.Id, out.Operator, out.RelationKey = f.ID, group, ""
+		out.Condition, out.Value, out.Format = model.BlockContentDataviewFilter_None, nil, 0
+		out.QuickOption, out.IncludeTime, out.NestedFilters = model.BlockContentDataviewFilter_ExactDate, false, nil
+		for i, n := range f.NestedFilters {
+			var nb *model.BlockContentDataviewFilter
+			if base != nil && i < len(base.NestedFilters) {
+				nb = base.NestedFilters[i]
+			}
+			child, err := n.toModel(nb)
+			if err != nil {
+				return nil, fmt.Errorf("nested_filters[%d]: %w", i, err)
+			}
+			out.NestedFilters = append(out.NestedFilters, child)
+		}
+		return out, nil
+	}
+	if len(f.NestedFilters) > 0 {
+		return nil, errors.New("nested_filters needs operator and or or")
+	}
 	if strings.TrimSpace(f.RelationKey) == "" {
 		return nil, errors.New("filter needs property_key")
 	}
@@ -547,49 +588,67 @@ func (f FilterSpec) toModel() (*model.BlockContentDataviewFilter, error) {
 	if err != nil {
 		return nil, err
 	}
-	if op := strings.ToLower(strings.TrimSpace(f.Operator)); op != "" && op != "no" {
+	if op != "" && op != "no" {
 		return nil, fmt.Errorf(filterOperatorRefusal, f.Operator)
-	}
-	operator, err := lookupEnum(filterOperators, f.Operator, "filter operator", true)
-	if err != nil {
-		return nil, err
 	}
 	format, err := lookupEnum(relationFormats, f.Format, "property format", true)
 	if err != nil {
 		return nil, err
 	}
-	out := &model.BlockContentDataviewFilter{
-		Id:          f.ID,
-		RelationKey: f.RelationKey,
-		Condition:   condition,
-		Operator:    operator,
-		Format:      format,
-		IncludeTime: f.IncludeTime,
+	quick, err := lookupEnum(filterQuickOptions, f.QuickOption, "quick option", true)
+	if err != nil {
+		return nil, err
 	}
+	out := cloneFilter(base)
+	if out == nil {
+		out = &model.BlockContentDataviewFilter{}
+	}
+	out.Id = f.ID
+	out.Operator = model.BlockContentDataviewFilter_No
+	out.RelationKey = f.RelationKey
+	out.Condition = condition
+	out.Format = format
+	out.QuickOption = quick
+	out.IncludeTime = false
+	out.NestedFilters = nil
+	out.Value = nil
 	// empty/not_empty/exists take no operand.
-	switch condition {
-	case model.BlockContentDataviewFilter_Empty,
-		model.BlockContentDataviewFilter_NotEmpty,
-		model.BlockContentDataviewFilter_Exists:
-	default:
+	if !noValueCondition(condition) {
 		out.Value = toProtoValue(f.Value)
 	}
 	return out, nil
 }
 
 func filterFromModel(f *model.BlockContentDataviewFilter) FilterSpec {
-	return FilterSpec{
+	if f.RelationKey == "" && f.Operator != model.BlockContentDataviewFilter_No {
+		out := FilterSpec{ID: f.Id, Operator: strings.ToLower(f.Operator.String())}
+		for _, n := range f.NestedFilters {
+			out.NestedFilters = append(out.NestedFilters, filterFromModel(n))
+		}
+		return out
+	}
+	out := FilterSpec{
 		ID:          f.Id,
 		RelationKey: f.RelationKey,
 		Condition:   canonicalName(filterConditionNames, f.Condition, f.Condition.String()),
 		Operator:    strings.ToLower(f.Operator.String()),
 		Format:      f.Format.String(),
 		Value:       fromProtoValue(f.Value),
-		IncludeTime: f.IncludeTime,
 	}
+	if f.QuickOption != model.BlockContentDataviewFilter_ExactDate {
+		out.QuickOption = canonicalName(filterQuickOptionNames, f.QuickOption, f.QuickOption.String())
+	}
+	// A leaf that wrongly carries nested filters still shows them, so the
+	// read hides nothing that is stored.
+	for _, n := range f.NestedFilters {
+		out.NestedFilters = append(out.NestedFilters, filterFromModel(n))
+	}
+	return out
 }
 
-func (s SortSpec) toModel() (*model.BlockContentDataviewSort, error) {
+// toModel converts a sort. base, when given, is the stored sort of the same
+// id; CustomOrder and NoCollate are not modelled and survive through it.
+func (s SortSpec) toModel(base *model.BlockContentDataviewSort) (*model.BlockContentDataviewSort, error) {
 	if strings.TrimSpace(s.RelationKey) == "" {
 		return nil, errors.New("sort needs property_key")
 	}
@@ -605,14 +664,18 @@ func (s SortSpec) toModel() (*model.BlockContentDataviewSort, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &model.BlockContentDataviewSort{
-		Id:             s.ID,
-		RelationKey:    s.RelationKey,
-		Type:           sortType,
-		Format:         format,
-		IncludeTime:    s.IncludeTime,
-		EmptyPlacement: empty,
-	}, nil
+	out := &model.BlockContentDataviewSort{}
+	if base != nil {
+		c := *base
+		out = &c
+	}
+	out.Id = s.ID
+	out.RelationKey = s.RelationKey
+	out.Type = sortType
+	out.Format = format
+	out.IncludeTime = s.IncludeTime
+	out.EmptyPlacement = empty
+	return out, nil
 }
 
 func sortFromModel(s *model.BlockContentDataviewSort) SortSpec {
@@ -647,20 +710,8 @@ func (v ViewSpec) toModel() (*model.BlockContentDataviewView, error) {
 		HideIcon:            v.HideIcon,
 		CardSize:            cardSize,
 	}
-	for _, f := range v.Filters {
-		converted, err := f.toModel()
-		if err != nil {
-			return nil, err
-		}
-		out.Filters = append(out.Filters, converted)
-	}
-	for _, s := range v.Sorts {
-		converted, err := s.toModel()
-		if err != nil {
-			return nil, err
-		}
-		out.Sorts = append(out.Sorts, converted)
-	}
+	// Filters and sorts are prepared by CreateView (filterprep.go), which
+	// needs the space to check them.
 	for _, r := range v.Relations {
 		if strings.TrimSpace(r.Key) == "" {
 			return nil, errors.New("view relation needs property_key")
@@ -729,10 +780,30 @@ func (c *Client) AnnotateAPIKeys(ctx context.Context, spaceID string, info *Data
 		view.APIGroupKey = keys.apiKey(view.GroupRelationKey)
 		view.APICoverKey = keys.apiKey(view.CoverRelationKey)
 		for j := range view.Filters {
-			view.Filters[j].APIRelationKey = keys.apiKey(view.Filters[j].RelationKey)
+			annotateFilter(&view.Filters[j], keys)
 		}
 		for j := range view.Sorts {
 			view.Sorts[j].APIRelationKey = keys.apiKey(view.Sorts[j].RelationKey)
+		}
+		// A filter or sort on a property that was deleted or archived is
+		// skipped by the app (lib/dataview.ts getFilteredFilters), while the
+		// REST list endpoint still applies it.
+		WalkFilters(view.Filters, func(f FilterSpec) {
+			if f.RelationKey == "" {
+				return
+			}
+			if _, err := keys.resolve(f.RelationKey); err != nil {
+				info.Warnings = append(info.Warnings, fmt.Sprintf(
+					"view %q, filter %q is on %q, a property that is deleted or archived: the app ignores it, get-list-objects-compact still applies it. Remove it",
+					view.ID, f.ID, f.RelationKey))
+			}
+		})
+		for _, so := range view.Sorts {
+			if _, err := keys.resolve(so.RelationKey); err != nil {
+				info.Warnings = append(info.Warnings, fmt.Sprintf(
+					"view %q, sort %q is on %q, a property that is deleted or archived: the app ignores it. Remove it",
+					view.ID, so.ID, so.RelationKey))
+			}
 		}
 		for j := range view.Relations {
 			view.Relations[j].APIKey = keys.apiKey(view.Relations[j].Key)
@@ -818,11 +889,22 @@ func (c *Client) InspectDataview(ctx context.Context, spaceID, objectID, blockID
 				info.Warnings = append(info.Warnings, fmt.Sprintf(
 					"view %q, filter %q on %q has operator %q and no nested filters: anytype reads it as an empty filter group, so it constrains nothing. Rewrite the filter without an operator",
 					v.Id, f.Id, f.RelationKey, strings.ToLower(f.Operator.String())))
+			} else if reason := inactiveReason(f); reason != "" {
+				// The app leaves such a filter out of the query, the REST list
+				// endpoint applies it: the two then show different rows.
+				info.Warnings = append(info.Warnings, fmt.Sprintf(
+					"view %q, filter %q on %q filters nothing in the app: %s. get-list-objects-compact still applies it, so its rows differ from the app's",
+					v.Id, f.Id, f.RelationKey, reason))
 			}
 		}
 		info.Views = append(info.Views, viewFromModel(v))
 	}
 	for _, o := range dv.ObjectOrders {
+		// heart empties an order instead of removing it when a filter or sort
+		// changes (resetObjectOrderForView); an empty one is no order.
+		if len(o.ObjectIds) == 0 {
+			continue
+		}
 		info.ObjectOrders = append(info.ObjectOrders, ObjectOrder{
 			ViewID: o.ViewId, GroupID: o.GroupId, ObjectIDs: o.ObjectIds,
 		})
@@ -1026,6 +1108,13 @@ func (c *Client) CreateView(ctx context.Context, spaceID, objectID, blockID stri
 	if err := keys.validateGrouping(view); err != nil {
 		return "", err
 	}
+	prep := &filterPrep{c: c, ctx: ctx, spaceID: spaceID, keys: keys, options: map[string][]tagOption{}}
+	if view.Filters, err = prep.prepareFilters(spec.Filters, nil); err != nil {
+		return "", err
+	}
+	if view.Sorts, err = prep.prepareSorts(spec.Sorts, nil); err != nil {
+		return "", err
+	}
 	if err := c.registerRelations(ctx, objectID, blockID, relationKeysOfView(spec)); err != nil {
 		return "", err
 	}
@@ -1063,6 +1152,32 @@ func (c *Client) UpdateView(ctx context.Context, spaceID, objectID, blockID, vie
 	}
 	if err := keys.applyToView(&spec); err != nil {
 		return err
+	}
+
+	// Everything is checked and converted before the first write. The lists
+	// are replaced entry by entry (remove all, add each), so an entry refused
+	// halfway used to leave the view with its old filters gone and only part
+	// of the new ones written, while the call reported an error.
+	var (
+		stored     *model.BlockContentDataviewView
+		newFilters []*model.BlockContentDataviewFilter
+		newSorts   []*model.BlockContentDataviewSort
+	)
+	if spec.FiltersSet || spec.SortsSet {
+		if stored, err = c.findViewModel(ctx, spaceID, objectID, blockID, viewID); err != nil {
+			return err
+		}
+		prep := &filterPrep{c: c, ctx: ctx, spaceID: spaceID, keys: keys, options: map[string][]tagOption{}}
+		if spec.FiltersSet {
+			if newFilters, err = prep.prepareFilters(spec.Filters, stored.Filters); err != nil {
+				return err
+			}
+		}
+		if spec.SortsSet {
+			if newSorts, err = prep.prepareSorts(spec.Sorts, stored.Sorts); err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := c.registerRelations(ctx, objectID, blockID, relationKeysOfView(spec)); err != nil {
@@ -1104,59 +1219,101 @@ func (c *Client) UpdateView(ctx context.Context, spaceID, objectID, blockID, vie
 		}
 	}
 
-	if !spec.FiltersSet && !spec.SortsSet && !spec.RelationsSet {
-		return nil
-	}
-
-	current, err := c.findView(ctx, spaceID, objectID, blockID, viewID)
-	if err != nil {
-		return err
-	}
-
 	if spec.FiltersSet {
-		existing := make([]string, 0, len(current.Filters))
-		for _, f := range current.Filters {
-			if f.ID != "" {
-				existing = append(existing, f.ID)
-			}
-		}
-		if len(existing) > 0 {
-			if err := c.RemoveFilters(ctx, objectID, blockID, viewID, existing); err != nil {
-				return fmt.Errorf("replacing filters: %w", err)
-			}
-		}
-		for _, f := range spec.Filters {
-			if err := c.AddFilter(ctx, spaceID, objectID, blockID, viewID, f); err != nil {
-				return fmt.Errorf("replacing filters: %w", err)
-			}
+		if err := c.replaceFilters(ctx, objectID, blockID, viewID, stored.Filters, newFilters); err != nil {
+			return err
 		}
 	}
-
 	if spec.SortsSet {
-		existing := make([]string, 0, len(current.Sorts))
-		for _, s := range current.Sorts {
-			if s.ID != "" {
-				existing = append(existing, s.ID)
-			}
-		}
-		if len(existing) > 0 {
-			if err := c.RemoveSorts(ctx, objectID, blockID, viewID, existing); err != nil {
-				return fmt.Errorf("replacing sorts: %w", err)
-			}
-		}
-		for _, s := range spec.Sorts {
-			if err := c.AddSort(ctx, spaceID, objectID, blockID, viewID, s); err != nil {
-				return fmt.Errorf("replacing sorts: %w", err)
-			}
+		if err := c.replaceSorts(ctx, objectID, blockID, viewID, stored.Sorts, newSorts); err != nil {
+			return err
 		}
 	}
 
 	if spec.RelationsSet {
+		current, err := c.findView(ctx, spaceID, objectID, blockID, viewID)
+		if err != nil {
+			return err
+		}
 		if err := c.replaceViewRelations(ctx, objectID, blockID, viewID, current.Relations, spec.Relations); err != nil {
 			return fmt.Errorf("replacing columns: %w", err)
 		}
 	}
 	return nil
+}
+
+// replaceFilters swaps a view's filters for prepared ones. heart has no call
+// that replaces the list (BlockDataviewViewUpdate ignores Filters), so it is
+// remove all, then add each. Should an RPC fail after the removal, the old
+// filters are put back as they were stored.
+func (c *Client) replaceFilters(ctx context.Context, objectID, blockID, viewID string, old, wanted []*model.BlockContentDataviewFilter) error {
+	if err := c.removeFilterIDs(ctx, objectID, blockID, viewID, filterIDs(old)); err != nil {
+		return fmt.Errorf("replacing filters: %w", err)
+	}
+	var added []string
+	for _, f := range wanted {
+		id, err := c.addFilterModel(ctx, objectID, blockID, viewID, f)
+		if err != nil {
+			restoreErr := c.removeFilterIDs(ctx, objectID, blockID, viewID, added)
+			for _, o := range old {
+				if restoreErr != nil {
+					break
+				}
+				_, restoreErr = c.addFilterModel(ctx, objectID, blockID, viewID, o)
+			}
+			if restoreErr != nil {
+				return fmt.Errorf("replacing filters: %w; putting the old filters back failed too (%v), so check the view with query-inspect", err, restoreErr)
+			}
+			return fmt.Errorf("replacing filters: %w; the old filters were put back", err)
+		}
+		added = append(added, id)
+	}
+	return nil
+}
+
+// replaceSorts is replaceFilters for sorts.
+func (c *Client) replaceSorts(ctx context.Context, objectID, blockID, viewID string, old, wanted []*model.BlockContentDataviewSort) error {
+	if err := c.removeSortIDs(ctx, objectID, blockID, viewID, sortIDs(old)); err != nil {
+		return fmt.Errorf("replacing sorts: %w", err)
+	}
+	var added []string
+	for _, s := range wanted {
+		if err := c.addSortModel(ctx, objectID, blockID, viewID, s); err != nil {
+			restoreErr := c.removeSortIDs(ctx, objectID, blockID, viewID, added)
+			for _, o := range old {
+				if restoreErr != nil {
+					break
+				}
+				restoreErr = c.addSortModel(ctx, objectID, blockID, viewID, o)
+			}
+			if restoreErr != nil {
+				return fmt.Errorf("replacing sorts: %w; putting the old sorts back failed too (%v), so check the view with query-inspect", err, restoreErr)
+			}
+			return fmt.Errorf("replacing sorts: %w; the old sorts were put back", err)
+		}
+		added = append(added, s.Id)
+	}
+	return nil
+}
+
+func filterIDs(fs []*model.BlockContentDataviewFilter) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		if f.Id != "" {
+			out = append(out, f.Id)
+		}
+	}
+	return out
+}
+
+func sortIDs(ss []*model.BlockContentDataviewSort) []string {
+	out := make([]string, 0, len(ss))
+	for _, s := range ss {
+		if s.Id != "" {
+			out = append(out, s.Id)
+		}
+	}
+	return out
 }
 
 // replaceViewRelations makes a view's visible columns match the requested list.
@@ -1310,37 +1467,111 @@ func (c *Client) SetActiveView(ctx context.Context, objectID, blockID, viewID st
 	return nil
 }
 
-// AddFilter appends a filter to a view.
-func (c *Client) AddFilter(ctx context.Context, spaceID, objectID, blockID, viewID string, spec FilterSpec) error {
-	keys, err := c.loadRelationKeys(ctx, spaceID)
+// AddFilter appends a filter to a view and returns its id together with the
+// filter as stored, values converted and the format taken from the property.
+func (c *Client) AddFilter(ctx context.Context, spaceID, objectID, blockID, viewID string, spec FilterSpec) (string, FilterSpec, error) {
+	view, err := c.findViewModel(ctx, spaceID, objectID, blockID, viewID)
 	if err != nil {
-		return err
+		return "", FilterSpec{}, err
 	}
-	if spec.RelationKey, err = keys.resolve(spec.RelationKey); err != nil {
-		return err
+	spec.ID = ""
+	op := strings.ToLower(strings.TrimSpace(spec.Operator))
+	if _, group := filterGroupOperators[op]; group {
+		// The app offers one group per view and hides "Advanced filter" once
+		// there is one; its rules are extended there, not beside it.
+		for _, f := range view.Filters {
+			if f.RelationKey == "" && f.Operator != model.BlockContentDataviewFilter_No {
+				return "", FilterSpec{}, fmt.Errorf("this view already has a filter group (%s); change its rules with query-view-update instead of adding a second group", f.Id)
+			}
+		}
 	}
-	filter, err := spec.toModel()
+	prep, err := c.newFilterPrep(ctx, spaceID)
 	if err != nil {
-		return err
+		return "", FilterSpec{}, err
 	}
+	filter, err := prep.prepareFilter(spec, nil, 0)
+	if err != nil {
+		return "", FilterSpec{}, err
+	}
+	id, err := c.addFilterModel(ctx, objectID, blockID, viewID, filter)
+	if err != nil {
+		return "", FilterSpec{}, err
+	}
+	filter.Id = id
+	stored := filterFromModel(filter)
+	annotateFilter(&stored, prep.keys)
+	return id, stored, nil
+}
+
+// annotateFilter adds the public spelling of every key in a filter.
+func annotateFilter(f *FilterSpec, keys *relationKeyMap) {
+	f.APIRelationKey = keys.apiKey(f.RelationKey)
+	for i := range f.NestedFilters {
+		annotateFilter(&f.NestedFilters[i], keys)
+	}
+}
+
+func (c *Client) addFilterModel(ctx context.Context, objectID, blockID, viewID string, filter *model.BlockContentDataviewFilter) (string, error) {
 	callCtx, cancel := c.contextWithAuth(ctx)
 	defer cancel()
 	resp, err := c.rpc.BlockDataviewFilterAdd(callCtx, &pb.RpcBlockDataviewFilterAddRequest{
 		ContextId: objectID, BlockId: blockID, ViewId: viewID, Filter: filter,
 	})
 	if err != nil {
-		return fmt.Errorf("gRPC BlockDataviewFilterAdd failed: %w", err)
+		return "", fmt.Errorf("gRPC BlockDataviewFilterAdd failed: %w", err)
 	}
 	if resp.Error != nil && resp.Error.Code != pb.RpcBlockDataviewFilterAddResponseError_NULL {
-		return fmt.Errorf("BlockDataviewFilterAdd error (%s): %s", resp.Error.Code, resp.Error.Description)
+		return "", fmt.Errorf("BlockDataviewFilterAdd error (%s): %s", resp.Error.Code, resp.Error.Description)
 	}
-	return nil
+	if resp.FilterId != "" {
+		return resp.FilterId, nil
+	}
+	return filter.Id, nil
 }
 
-// RemoveFilters deletes filters by id.
-func (c *Client) RemoveFilters(ctx context.Context, objectID, blockID, viewID string, ids []string) error {
+// RemoveFilters deletes filters by id. Every id has to be on the view: heart
+// removes unknown ids without complaint, so a mistyped id used to report
+// success while the filter it meant stayed.
+func (c *Client) RemoveFilters(ctx context.Context, spaceID, objectID, blockID, viewID string, ids []string) error {
 	if len(ids) == 0 {
 		return errors.New("filter_ids is required")
+	}
+	view, err := c.findViewModel(ctx, spaceID, objectID, blockID, viewID)
+	if err != nil {
+		return err
+	}
+	if err := checkIDs("filter", ids, filterIDs(view.Filters)); err != nil {
+		return err
+	}
+	return c.removeFilterIDs(ctx, objectID, blockID, viewID, ids)
+}
+
+// checkIDs refuses ids a view does not have, naming the ones it has.
+func checkIDs(what string, ids, present []string) error {
+	known := make(map[string]bool, len(present))
+	for _, id := range present {
+		known[id] = true
+	}
+	var unknown []string
+	for _, id := range ids {
+		if !known[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	have := "none"
+	if len(present) > 0 {
+		have = strings.Join(present, ", ")
+	}
+	return fmt.Errorf("this view has no %s with the id %s, so nothing was removed. Its %s ids: %s",
+		what, strings.Join(unknown, ", "), what, have)
+}
+
+func (c *Client) removeFilterIDs(ctx context.Context, objectID, blockID, viewID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
 	}
 	callCtx, cancel := c.contextWithAuth(ctx)
 	defer cancel()
@@ -1356,19 +1587,24 @@ func (c *Client) RemoveFilters(ctx context.Context, objectID, blockID, viewID st
 	return nil
 }
 
-// AddSort appends a sort to a view.
-func (c *Client) AddSort(ctx context.Context, spaceID, objectID, blockID, viewID string, spec SortSpec) error {
-	keys, err := c.loadRelationKeys(ctx, spaceID)
+// AddSort appends a sort to a view and returns its id.
+func (c *Client) AddSort(ctx context.Context, spaceID, objectID, blockID, viewID string, spec SortSpec) (string, error) {
+	prep, err := c.newFilterPrep(ctx, spaceID)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if spec.RelationKey, err = keys.resolve(spec.RelationKey); err != nil {
-		return err
-	}
-	sort, err := spec.toModel()
+	spec.ID = ""
+	sort, err := prep.prepareSort(spec, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
+	if err := c.addSortModel(ctx, objectID, blockID, viewID, sort); err != nil {
+		return "", err
+	}
+	return sort.Id, nil
+}
+
+func (c *Client) addSortModel(ctx context.Context, objectID, blockID, viewID string, sort *model.BlockContentDataviewSort) error {
 	callCtx, cancel := c.contextWithAuth(ctx)
 	defer cancel()
 	resp, err := c.rpc.BlockDataviewSortAdd(callCtx, &pb.RpcBlockDataviewSortAddRequest{
@@ -1383,10 +1619,24 @@ func (c *Client) AddSort(ctx context.Context, spaceID, objectID, blockID, viewID
 	return nil
 }
 
-// RemoveSorts deletes sorts by id.
-func (c *Client) RemoveSorts(ctx context.Context, objectID, blockID, viewID string, ids []string) error {
+// RemoveSorts deletes sorts by id, refusing ids the view does not have.
+func (c *Client) RemoveSorts(ctx context.Context, spaceID, objectID, blockID, viewID string, ids []string) error {
 	if len(ids) == 0 {
 		return errors.New("sort_ids is required")
+	}
+	view, err := c.findViewModel(ctx, spaceID, objectID, blockID, viewID)
+	if err != nil {
+		return err
+	}
+	if err := checkIDs("sort", ids, sortIDs(view.Sorts)); err != nil {
+		return err
+	}
+	return c.removeSortIDs(ctx, objectID, blockID, viewID, ids)
+}
+
+func (c *Client) removeSortIDs(ctx context.Context, objectID, blockID, viewID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
 	}
 	callCtx, cancel := c.contextWithAuth(ctx)
 	defer cancel()
