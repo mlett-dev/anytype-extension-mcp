@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 )
 
 const (
@@ -50,9 +52,11 @@ func (s *mcpServer) renderToolDefs() []any {
 		"name": "object-render",
 		"description": "Render an object as the Anytype GUI shows it, with the real Anytype frontend: an image link plus a layout report " +
 			"(table column widths, wrapped and clipped cells, px cut off at the side; per query or collection view its source, view name, " +
-			"other views, filter and sort counts, columns, cut-off cells and rows shown of the total; text cut off at the side, images that failed to load; " +
-			"complete, and why not). The report holds what the image shows in numbers; read it first. " +
-			"An embedded view has its own view settings and shows its first rows (10 by default) above a Load more button. " +
+			"other views, filter and sort counts, columns with cut-off cells and the width they need, rows shown of the total; " +
+			"text cut off at the side, images that failed to load). complete is true only when nothing is hidden: below the image, " +
+			"behind Load more, in closed toggles or past the side; incomplete_reasons says what is and how to show it. " +
+			"The report holds what the image shows in numbers; read it first. " +
+			"An embedded view has its own views, and only their filters apply; it shows its first rows (10 by default) above a Load more button. " +
 			"Opening the object sets its last-opened date, nothing else is written.",
 		"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 			"space_id":  spaceIDProp(),
@@ -149,7 +153,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 		return nativeToolResult{}, err
 	}
 
-	fingerprint, toggles, err := s.renderInputs(spaceID, objectID)
+	fingerprint, blocks, err := s.renderInputs(spaceID, objectID)
 	if err != nil {
 		return nativeToolResult{}, err
 	}
@@ -163,7 +167,7 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 
 	var expandIDs []string
 	if expand {
-		expandIDs = toggles
+		expandIDs = toggleIDs(blocks)
 	}
 
 	rendered, err := s.callRenderer(map[string]any{
@@ -209,10 +213,12 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	if rendered.Truncated {
 		out["truncated"] = true
 	}
+	// A daemon without the height measurement cannot say whether it is all.
 	if rendered.Complete != nil {
-		out["complete"] = *rendered.Complete
-		if !*rendered.Complete {
-			out["incomplete_reason"] = incompleteReason(rendered.Truncated, fullHeight)
+		reasons := hiddenContent(rendered, blocks, fullHeight, allRows, expand)
+		out["complete"] = len(reasons) == 0
+		if len(reasons) > 0 {
+			out["incomplete_reasons"] = reasons
 		}
 	}
 	var warnings []string
@@ -221,12 +227,6 @@ func (s *mcpServer) toolObjectRender(args map[string]any) (nativeToolResult, err
 	}
 	if len(rendered.Unsettled) > 0 {
 		warnings = append(warnings, "captured while still loading ("+strings.Join(rendered.Unsettled, ", ")+"), so parts may be missing or not yet in place")
-	}
-	if n := partlyShownViews(rendered.Layout); !allRows && fullHeight && n > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d embedded views show only their first rows; all_rows loads the rest", n))
-	}
-	if closed, _ := rendered.Layout["toggles_not_open"].([]any); expand && len(closed) > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d of %d toggles did not open, so their content is not in the image", len(closed), len(toggles)))
 	}
 	if len(warnings) > 0 {
 		out["warnings"] = warnings
@@ -266,28 +266,125 @@ func renderViews(args map[string]any) ([]map[string]string, error) {
 	return out, nil
 }
 
-// incompleteReason says why the image stops above the end of the object.
-func incompleteReason(truncated, fullHeight bool) string {
-	switch {
-	case truncated:
-		return "the object is taller than the renderer's height limit; the image stops there"
-	case !fullHeight:
-		return "full_height is false: the image shows the first screen only"
-	default:
-		return "the content continues below the image"
+// hiddenContent lists what the image does not show, each with the way to
+// show it: content below the image, rows behind Load more, closed toggles
+// with content, and content cut off at the side. Text a cell cuts short is
+// not in it: the report counts that per column, and nearly every grid has it.
+func hiddenContent(r renderResponse, blocks []anytypefiles.BlockInfo, fullHeight, allRows, expand bool) []string {
+	reasons := []string{}
+	if r.Complete != nil && !*r.Complete {
+		switch {
+		case r.Truncated:
+			reasons = append(reasons, "taller than the renderer's height limit: the image stops there")
+		case !fullHeight:
+			reasons = append(reasons, "only the first screen is in the image (full_height)")
+		default:
+			reasons = append(reasons, "content continues below the image")
+		}
 	}
-}
 
-// partlyShownViews counts embedded views that hold more rows than they show.
-// The object's own view ("dataview") loads up to 500 rows without a button.
-func partlyShownViews(layout map[string]any) int {
-	views, _ := layout["dataviews"].([]any)
-	n := 0
+	var behind, capped, unloaded int
+	views, _ := r.Layout["dataviews"].([]any)
 	for _, v := range views {
 		dv, _ := v.(map[string]any)
-		shown, _ := dv["rows_shown"].(float64)
-		total, ok := dv["rows_total"].(float64)
-		if ok && dv["block_id"] != "dataview" && shown < total {
+		total, okTotal := dv["rows_total"].(float64)
+		loaded, okLoaded := dv["rows_loaded"].(float64)
+		if !okTotal || !okLoaded || loaded >= total {
+			continue
+		}
+		missing := int(total - loaded)
+		switch {
+		case dv["block_id"] != "dataview" && !allRows:
+			behind += missing
+		case int(loaded) >= renderRowCap:
+			capped += missing
+		default:
+			unloaded += missing
+		}
+	}
+	if behind > 0 {
+		reasons = append(reasons, fmt.Sprintf("rows behind Load more in embedded views: %d (all_rows)", behind))
+	}
+	if capped > 0 {
+		reasons = append(reasons, fmt.Sprintf("rows beyond the %d loaded per view: %d", renderRowCap, capped))
+	}
+	if unloaded > 0 {
+		reasons = append(reasons, fmt.Sprintf("rows that did not load in time: %d", unloaded))
+	}
+
+	closed := map[string]bool{}
+	if expand {
+		notOpen, _ := r.Layout["toggles_not_open"].([]any)
+		for _, id := range notOpen {
+			if s, ok := id.(string); ok {
+				closed[s] = true
+			}
+		}
+	} else {
+		for _, id := range toggleIDs(blocks) {
+			closed[id] = true
+		}
+	}
+	if n := foldedToggles(blocks, closed); n > 0 {
+		if expand {
+			reasons = append(reasons, fmt.Sprintf("toggles that did not open: %d", n))
+		} else {
+			reasons = append(reasons, fmt.Sprintf("closed toggles with content: %d (expand_toggles)", n))
+		}
+	}
+
+	var cutOff, widest int
+	for _, list := range []string{"tables", "dataviews"} {
+		items, _ := r.Layout[list].([]any)
+		for _, item := range items {
+			m, _ := item.(map[string]any)
+			if px, _ := m["cut_off_px"].(float64); px > 0 {
+				cutOff++
+				widest = max(widest, int(px))
+			}
+		}
+	}
+	if cutOff > 0 {
+		reasons = append(reasons, fmt.Sprintf("tables and views cut off at the side: %d, by up to %d px (a wider window, or narrower columns)", cutOff, widest))
+	}
+	if clipped, _ := r.Layout["clipped_blocks"].([]any); len(clipped) > 0 {
+		reasons = append(reasons, fmt.Sprintf("text blocks running past the side: %d", len(clipped)))
+	}
+	return reasons
+}
+
+// toggleIDs are the blocks the GUI can fold: toggles and toggle headings.
+func toggleIDs(blocks []anytypefiles.BlockInfo) []string {
+	var ids []string
+	for _, b := range blocks {
+		if b.Kind == "text" && strings.HasPrefix(b.Style, "toggle") {
+			ids = append(ids, b.ID)
+		}
+	}
+	return ids
+}
+
+// foldedToggles counts the closed toggles that hide something: those with
+// children, and not themselves inside a closed toggle.
+func foldedToggles(blocks []anytypefiles.BlockInfo, closed map[string]bool) int {
+	parent := map[string]string{}
+	children := map[string]int{}
+	for _, b := range blocks {
+		children[b.ID] = len(b.ChildrenIDs)
+		for _, c := range b.ChildrenIDs {
+			parent[c] = b.ID
+		}
+	}
+	n := 0
+	for id := range closed {
+		if children[id] == 0 {
+			continue
+		}
+		inside := false
+		for p := parent[id]; p != "" && !inside; p = parent[p] {
+			inside = closed[p]
+		}
+		if !inside {
 			n++
 		}
 	}
@@ -353,9 +450,9 @@ func (s *mcpServer) callRenderer(request map[string]any) (renderResponse, error)
 }
 
 // renderInputs reads the object once: a fingerprint of its blocks for the
-// repeat check, and the blocks the GUI can fold, for expand_toggles. Reading
-// it also turns a wrong id into an error before the browser starts.
-func (s *mcpServer) renderInputs(spaceID, objectID string) (string, []string, error) {
+// repeat check, and the blocks themselves, for the toggles. Reading it also
+// turns a wrong id into an error before the browser starts.
+func (s *mcpServer) renderInputs(spaceID, objectID string) (string, []anytypefiles.BlockInfo, error) {
 	client, err := s.grpcClient()
 	if err != nil {
 		return "", nil, err
@@ -369,13 +466,7 @@ func (s *mcpServer) renderInputs(spaceID, objectID string) (string, []string, er
 	if err != nil {
 		return "", nil, err
 	}
-	var toggles []string
-	for _, b := range blocks {
-		if b.Kind == "text" && strings.HasPrefix(b.Style, "toggle") {
-			toggles = append(toggles, b.ID)
-		}
-	}
-	return sha256Hex(encoded), toggles, nil
+	return sha256Hex(encoded), blocks, nil
 }
 
 // exportBytes puts bytes the server made itself into the export cache, through

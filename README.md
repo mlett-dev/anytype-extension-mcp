@@ -380,23 +380,34 @@ JPEG or PNG, plus a layout report measured in the rendered page:
   its kind and view type, what it shows (for an embedded view the query or
   collection it points at, `source_id` and `source_name`, and for a query the
   types it lists, `query_of`), the active view's name with its filter and sort
-  counts, the names of all its views when it has several (`views`), the rows shown in the image and the rows in total, and for a grid
-  the columns with their widths, `cut_off_px`, and the cells whose text is cut
-  off (row and column name) — or, with "wrap content" on, how many cells wrap;
+  counts, the names of all its views when it has several (`views`), the rows
+  shown in the image, loaded and in total, `in_image: false` when the view
+  lies outside the picture, and for a grid the columns with their widths,
+  `cut_off_px`, and per column the cells whose text is cut short with the
+  width the longest of them needs (`needs_px`) — or, with "wrap content" on,
+  how many cells wrap. A calendar counts the entries of the month it shows;
 - text blocks cut off at the side, and images that failed or were still
   loading, by block id.
 
-`complete` says whether the image reaches the end of the object;
-`incomplete_reason` says why not (the first screen with `full_height: false`,
-or a page past the 16000 px limit, which also sets `truncated`). Warnings say
-when the picture was taken while network, fonts, images or rows were still
-loading, when `expand_toggles` left toggles closed, and when embedded views
-hold more rows than they show. The report is the more reliable channel: it
-states in numbers what the image shows, and it arrives even when a client does
-not fetch the link; `image: false` returns the report alone.
+`complete` is true only when nothing is hidden. `incomplete_reasons` lists
+what is, each with the way to show it: content below the image (the first
+screen with `full_height: false`, or a page past the 16000 px limit, which
+also sets `truncated`), rows behind "Load more" (`all_rows`) or past the 500
+rows loaded per view, closed toggles with content (`expand_toggles`; only the
+outermost closed one counts), and tables, views or text cut off at the side.
+Text a grid cell cuts short is not in it: nearly every grid has some, and the
+report counts it per column. Warnings say when the picture was taken while
+network, fonts, images or rows were still loading. The report is the more
+reliable channel: it states in numbers what the image shows, and it arrives
+even when a client does not fetch the link; `image: false` returns the report
+alone.
+
+Limits: 480-3840 px wide, 16000 px high, 500 rows per view with `all_rows`,
+6 MiB per image, 120 s per call. Renders run one at a time, since they share
+heart with every other client; a repeat within 90 s comes from memory.
 
 An embedded view is not the query it points at opened on its own: it keeps
-views of its own, with their own filters and sorts, and shows the first rows
+views of its own, and only their filters and sorts apply. It shows the first rows
 (the view's page limit, 10 by default) above a "Load more" button.
 `all_rows: true` presses that button until every row shows, up to 500 per
 view, as a user scrolling through it would.

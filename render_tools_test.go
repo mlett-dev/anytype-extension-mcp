@@ -14,6 +14,7 @@ import (
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pb/service"
 	"github.com/anyproto/anytype-heart/pkg/lib/pb/model"
+	"github.com/mlett-dev/anytype-extension-mcp/anytypefiles"
 	"google.golang.org/grpc"
 )
 
@@ -34,8 +35,20 @@ func (f *showFixture) ObjectShow(_ context.Context, request *pb.RpcObjectShowReq
 	return &pb.RpcObjectShowResponse{ObjectView: &model.ObjectView{RootId: "o", Blocks: []*model.Block{
 		{Id: "o", ChildrenIds: []string{"t", "g"}, Content: &model.BlockContentOfSmartblock{Smartblock: &model.BlockContentSmartblock{}}},
 		text("t", f.text, model.BlockContentText_Paragraph),
-		text("g", "fold", model.BlockContentText_Toggle),
+		withChildren(text("g", "fold", model.BlockContentText_Toggle), "gc"),
+		text("gc", "inside", model.BlockContentText_Paragraph),
 	}}}
+}
+
+func withChildren(b *model.Block, ids ...string) *model.Block {
+	b.ChildrenIds = ids
+	return b
+}
+
+// reasons is incomplete_reasons joined, for Contains checks.
+func reasons(res nativeToolResult) string {
+	list, _ := res.Metadata["incomplete_reasons"].([]string)
+	return strings.Join(list, " | ")
 }
 
 // renderTestServer is an MCP server with a heart fixture and a renderer URL.
@@ -125,8 +138,9 @@ func TestObjectRenderExportsImageAndReport(t *testing.T) {
 	if _, ok := res.Metadata["warnings"]; ok {
 		t.Errorf("warnings without a refused call: %v", res.Metadata["warnings"])
 	}
-	if res.Metadata["complete"] != true || res.Metadata["incomplete_reason"] != nil {
-		t.Errorf("complete = %v, reason = %v; want true and no reason", res.Metadata["complete"], res.Metadata["incomplete_reason"])
+	// Toggles opened, nothing below, beside or behind Load more.
+	if res.Metadata["complete"] != true || res.Metadata["incomplete_reasons"] != nil {
+		t.Errorf("complete = %v, reasons = %v; want true and none", res.Metadata["complete"], res.Metadata["incomplete_reasons"])
 	}
 
 	// ChatGPT's repeat of the same call is answered without a second render.
@@ -207,23 +221,64 @@ func TestObjectRenderFlagsWhatIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Metadata["complete"] != false || !strings.Contains(res.Metadata["incomplete_reason"].(string), "continues below") {
-		t.Errorf("complete = %v, reason = %v", res.Metadata["complete"], res.Metadata["incomplete_reason"])
+	got := reasons(res)
+	if res.Metadata["complete"] != false || !strings.Contains(got, "continues below") || !strings.Contains(got, "toggles that did not open: 1") {
+		t.Errorf("complete = %v, reasons = %q", res.Metadata["complete"], got)
 	}
-	warnings := strings.Join(res.Metadata["warnings"].([]string), " | ")
-	for _, want := range []string{"still loading (images)", "1 of 1 toggles did not open"} {
-		if !strings.Contains(warnings, want) {
-			t.Errorf("warnings %q lack %q", warnings, want)
-		}
+	if w := strings.Join(res.Metadata["warnings"].([]string), " | "); !strings.Contains(w, "still loading (images)") || strings.Contains(w, "toggle") {
+		t.Errorf("warnings = %q: loading belongs there, toggles in the reasons", w)
 	}
 
-	// Toggles not asked to open are no news.
+	// A page opens with its toggles closed: hidden content, and how to show it.
 	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "theme": "dark"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.Join(res.Metadata["warnings"].([]string), " "), "toggles") {
-		t.Errorf("toggle warning without expand_toggles: %v", res.Metadata["warnings"])
+	if got := reasons(res); !strings.Contains(got, "closed toggles with content: 1 (expand_toggles)") {
+		t.Errorf("reasons = %q", got)
+	}
+}
+
+func TestObjectRenderSaysWhatIsCutOffAtTheSide(t *testing.T) {
+	reply := renderReply()
+	layout := reply["layout"].(map[string]any)
+	layout["tables"] = []any{map[string]any{"block_id": "t1", "cut_off_px": 214}}
+	layout["dataviews"] = []any{map[string]any{"block_id": "dv1", "cut_off_px": 175, "rows_total": 3, "rows_loaded": 3}}
+	layout["clipped_blocks"] = []any{"t"}
+	daemon, _, _ := fakeRenderer(t, http.StatusOK, reply)
+	server, _ := renderTestServer(t, daemon.URL)
+	res, err := server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "expand_toggles": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reasons(res)
+	for _, want := range []string{"tables and views cut off at the side: 2, by up to 214 px", "text blocks running past the side: 1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reasons %q lack %q", got, want)
+		}
+	}
+	if res.Metadata["complete"] != false || strings.Contains(got, "rows") || strings.Contains(got, "below") {
+		t.Errorf("complete = %v, reasons = %q", res.Metadata["complete"], got)
+	}
+}
+
+func TestFoldedTogglesCountsOnlyWhatHidesSomething(t *testing.T) {
+	blocks := []anytypefiles.BlockInfo{
+		{ID: "o", ChildrenIDs: []string{"a", "b"}},
+		{ID: "a", Kind: "text", Style: "toggle", ChildrenIDs: []string{"a1"}},
+		{ID: "a1", Kind: "text", Style: "toggle_header2", ChildrenIDs: []string{"a2"}},
+		{ID: "a2", Kind: "text"},
+		{ID: "b", Kind: "text", Style: "toggle"},
+	}
+	all := map[string]bool{"a": true, "a1": true, "b": true}
+	if n := foldedToggles(blocks, all); n != 1 {
+		t.Errorf("all closed: %d, want 1 (a; a1 is inside it, b is empty)", n)
+	}
+	if n := foldedToggles(blocks, map[string]bool{"a1": true}); n != 1 {
+		t.Errorf("only the inner one closed: %d, want 1", n)
+	}
+	if ids := toggleIDs(blocks); len(ids) != 3 {
+		t.Errorf("toggleIDs = %v", ids)
 	}
 }
 
@@ -247,8 +302,9 @@ func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
 	reply["image"] = ""
 	reply["complete"] = false
 	reply["layout"].(map[string]any)["dataviews"] = []any{
-		map[string]any{"block_id": "dv1", "kind": "query", "rows_shown": 10, "rows_total": 63},
-		map[string]any{"block_id": "dataview", "kind": "query", "rows_shown": 30, "rows_total": 30},
+		map[string]any{"block_id": "dv1", "kind": "query", "rows_shown": 10, "rows_loaded": 10, "rows_total": 63},
+		map[string]any{"block_id": "dataview", "kind": "query", "rows_shown": 30, "rows_loaded": 30, "rows_total": 30},
+		map[string]any{"block_id": "dv2", "kind": "query", "rows_shown": 500, "rows_loaded": 500, "rows_total": 800},
 	}
 	daemon, calls, last := fakeRenderer(t, http.StatusOK, reply)
 	server, _ := renderTestServer(t, daemon.URL)
@@ -263,20 +319,17 @@ func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
 	if len(res.Content) != 0 || res.Metadata["uri"] != nil {
 		t.Errorf("report only, yet content = %v, uri = %v", res.Content, res.Metadata["uri"])
 	}
-	if !strings.Contains(res.Metadata["incomplete_reason"].(string), "first screen") {
-		t.Errorf("reason = %v", res.Metadata["incomplete_reason"])
-	}
-	// The first screen does not show every row anyway: no hint about all_rows.
-	if w, _ := res.Metadata["warnings"].([]string); strings.Contains(strings.Join(w, " "), "all_rows") {
-		t.Errorf("all_rows hint on a first-screen render: %v", w)
+	if got := reasons(res); !strings.Contains(got, "only the first screen") {
+		t.Errorf("reasons = %q", got)
 	}
 
 	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "image": false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w, _ := res.Metadata["warnings"].([]string); !strings.Contains(strings.Join(w, " "), "1 embedded views show only their first rows") {
-		t.Errorf("warnings = %v, want the all_rows hint for dv1 only", w)
+	// Rows not loaded count, rows loaded but below the picture do not.
+	if got := reasons(res); !strings.Contains(got, "rows behind Load more in embedded views: 353 (all_rows)") {
+		t.Errorf("reasons = %q", got)
 	}
 	res, err = server.toolObjectRender(map[string]any{"space_id": "s", "object_id": "o", "image": false, "all_rows": true})
 	if err != nil {
@@ -285,8 +338,14 @@ func TestObjectRenderReportOnlyAndAllRows(t *testing.T) {
 	if (*last)["all_rows"] != true || *calls != 3 {
 		t.Errorf("all_rows not passed on, or answered from memory: %v, calls=%d", *last, *calls)
 	}
-	if w, _ := res.Metadata["warnings"].([]string); strings.Contains(strings.Join(w, " "), "all_rows") {
-		t.Errorf("all_rows hint although all_rows was set: %v", w)
+	got := reasons(res)
+	for _, want := range []string{"rows beyond the 500 loaded per view: 300", "rows that did not load in time: 53"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reasons %q lack %q", got, want)
+		}
+	}
+	if strings.Contains(got, "Load more") {
+		t.Errorf("Load more named although all_rows was set: %q", got)
 	}
 }
 

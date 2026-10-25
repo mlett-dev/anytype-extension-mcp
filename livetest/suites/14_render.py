@@ -39,6 +39,10 @@ def run(s):
     s.check("the image comes as an export link", str(res.get("uri", "")).startswith("anytype-export://"), res.get("uri"))
     s.check("nothing the page needed was refused", "warnings" not in res, res.get("warnings"))
     s.check("the layout is named", (res.get("layout") or {}).get("layout") == "edit", res.get("layout"))
+    s.check("closed toggles with content make the render incomplete, and say how to open them",
+            res.get("complete") is False
+            and any("closed toggles with content: 1 (expand_toggles)" in r for r in res.get("incomplete_reasons", [])),
+            res.get("incomplete_reasons"))
 
     again = s.c.call("object-render", space_id=s.space_id, object_id=obj)
     s.check("a repeated call returns the same link without rendering again", again.get("uri") == res.get("uri"),
@@ -49,7 +53,7 @@ def run(s):
             opened.get("height_px", 0) > res.get("height_px", 0), (opened.get("height_px"), res.get("height_px")))
     s.check("every toggle opened, the nested one too", "warnings" not in opened, opened.get("warnings"))
     s.check("a full-height render holds the whole object",
-            opened.get("complete") is True and "incomplete_reason" not in opened
+            opened.get("complete") is True and "incomplete_reasons" not in opened
             and opened["layout"]["content_height_px"] <= opened["height_px"], opened)
 
     long_page = s.page("render lang")
@@ -58,7 +62,7 @@ def run(s):
     s.settle(2)
     first = s.c.call("object-render", space_id=s.space_id, object_id=long_page, full_height=False, width=480)
     s.check("the first screen of a long object says it is not all of it, and why",
-            first.get("complete") is False and "first screen" in first.get("incomplete_reason", "")
+            first.get("complete") is False and any("first screen" in r for r in first.get("incomplete_reasons", []))
             and first["layout"]["content_height_px"] > first["height_px"], first)
 
     # Embedded, a collection of 12 shows its first 10 rows above Load more.
@@ -74,12 +78,14 @@ def run(s):
             views[0].get("source_id") == coll and views[0].get("view_name") and isinstance(views[0].get("filters"), int), views)
     s.check("it shows the first rows of 12 and says all_rows loads the rest",
             views[0].get("rows_total") == 12 and views[0].get("rows_shown", 12) < 12
-            and any("all_rows" in w for w in some.get("warnings", [])), (views, some.get("warnings")))
+            and any("rows behind Load more in embedded views: 2 (all_rows)" in r for r in some.get("incomplete_reasons", [])),
+            (views, some.get("incomplete_reasons")))
     s.check("image false returns the report without an image", "uri" not in some, some.get("uri"))
     every = s.c.call("object-render", space_id=s.space_id, object_id=host, all_rows=True)
     rows = ((every.get("layout") or {}).get("dataviews") or [{}])[0]
-    s.check("all_rows shows every row", rows.get("rows_shown") == 12 and "warnings" not in every,
-            (rows, every.get("warnings")))
+    s.check("all_rows shows every row, and then the render is complete",
+            rows.get("rows_shown") == 12 and every.get("complete") is True and "warnings" not in every,
+            (rows, every.get("incomplete_reasons"), every.get("warnings")))
 
     # Another view, as a click on its tab shows it, without saving the switch.
     s.c.call("query-view-create", space_id=s.space_id, object_id=host, name="Liste", layout="list")
