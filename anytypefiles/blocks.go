@@ -429,7 +429,40 @@ func (c *Client) ReadBlocks(ctx context.Context, spaceID, objectID string) ([]Bl
 	for _, b := range view.GetBlocks() {
 		blocks = append(blocks, blockFromModel(b))
 	}
-	return blocks, view.GetRootId(), nil
+	return documentOrder(blocks, view.GetRootId()), view.GetRootId(), nil
+}
+
+// documentOrder sorts blocks the way the page shows them: depth first from
+// the root, along children_ids. heart's own order is not that: it lists the
+// root's children before their content, and a reader filtering it by style
+// put a heading below the items it belongs to. Blocks the walk does not reach
+// keep their place at the end rather than being dropped.
+func documentOrder(blocks []BlockInfo, rootID string) []BlockInfo {
+	byID := make(map[string]int, len(blocks))
+	for i, b := range blocks {
+		byID[b.ID] = i
+	}
+	out := make([]BlockInfo, 0, len(blocks))
+	placed := make([]bool, len(blocks))
+	var walk func(id string)
+	walk = func(id string) {
+		i, ok := byID[id]
+		if !ok || placed[i] {
+			return
+		}
+		placed[i] = true
+		out = append(out, blocks[i])
+		for _, child := range blocks[i].ChildrenIDs {
+			walk(child)
+		}
+	}
+	walk(rootID)
+	for i, b := range blocks {
+		if !placed[i] {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 // ReadDetails returns the object's own details as ObjectShow reports them,

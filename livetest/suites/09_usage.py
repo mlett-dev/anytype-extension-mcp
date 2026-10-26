@@ -282,7 +282,34 @@ def run(s):
         entry and entry.get("created_by") in member_names and entry.get("created_by"),
         {"entry": entry, "members": sorted(n for n in member_names if n)},
     )
+    # Finding one thing in a full bin: query narrows it, offset pages on.
+    found = s.c.call("list-archived", space_id=s.space_id, query=s.probe("IMKORB").upper(), limit=5)
+    s.check(
+        "list-archived query finds the object by name, ignoring case",
+        doomed in [o["object_id"] for o in found["objects"]]
+        and all("imkorb" in o.get("name", "").lower() for o in found["objects"])
+        and found["matches"] == len(found["objects"]),
+        found,
+    )
+    first = s.c.call("list-archived", space_id=s.space_id, limit=1)
+    if binned["total"] > 1:
+        second = s.c.call("list-archived", space_id=s.space_id, limit=1, offset=first["next_offset"])
+        s.check(
+            "list-archived pages on with next_offset",
+            first["has_more"] is True and second["objects"][0]["object_id"] != first["objects"][0]["object_id"],
+            (first, second),
+        )
+    # The search tools skip the bin, so an empty answer points there.
+    missing = s.c.call("search-space-compact", space_id=s.space_id, query=s.probe("IMKORB"))
+    s.check(
+        "a search that finds nothing points to list-archived",
+        missing["count"] == 0 and "list-archived" in missing.get("hint", ""),
+        missing,
+    )
     s.c.call("object-set-archived", space_id=s.space_id, object_ids=[doomed], archived=False)
+    s.settle(2.0)
+    back = s.c.call("search-space-compact", space_id=s.space_id, query=s.probe("imkorb"))
+    s.check("a search with results carries no hint", back["count"] >= 1 and "hint" not in back, back)
 
     # --- schema usage ------------------------------------------------------
     lonely = s.c.call(

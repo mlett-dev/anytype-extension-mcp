@@ -77,6 +77,7 @@ func (s *mcpServer) toolListObjectsCompact(args map[string]any) (map[string]any,
 	copyIfPresent(out, payload, "pagination")
 	copyIfPresent(out, payload, "total")
 	copyIfPresent(out, payload, "has_more")
+	s.capList(out, "objects", offset)
 	return out, nil
 }
 
@@ -560,6 +561,10 @@ func (s *mcpServer) toolSearchCompact(args map[string]any, requireSpace bool) (m
 	rawData, _ := payload["data"].([]any)
 	objects, _ := out["objects"].([]map[string]any)
 	s.addEmptyKeys(spaceID, rawData, objects, opts)
+	if len(objects) == 0 && offset == 0 && optionalString(args, "query") != "" {
+		out["hint"] = "search skips the Bin; list-archived with query looks there"
+	}
+	s.capList(out, "objects", offset)
 	return out, nil
 }
 
@@ -647,6 +652,7 @@ func (s *mcpServer) toolSpaceObjectsCompact(args map[string]any) (map[string]any
 	rawData, _ := payload["data"].([]any)
 	objects, _ := out["objects"].([]map[string]any)
 	s.addEmptyKeys(spaceID, rawData, objects, opts)
+	s.capList(out, "objects", offset)
 	return out, nil
 }
 

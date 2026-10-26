@@ -40,6 +40,11 @@ func (s *mcpServer) blockToolDefs() []any {
 				"space_id":  spaceIDProp(),
 				"object_id": strProp("Object whose blocks to read."),
 				"text_only": map[string]any{"type": "boolean", "description": "Return only text blocks, skipping layout and structural blocks.", "default": false},
+				"styles": map[string]any{
+					"type":        "array",
+					"description": "Return only text blocks of these styles, e.g. checkbox, header1, header2 and header3 to read a checklist with its headings.",
+					"items":       map[string]any{"type": "string", "enum": enumProp("", anytypefiles.TextStyleNames())["enum"]},
+				},
 			}),
 		},
 		map[string]any{
@@ -451,9 +456,22 @@ func (s *mcpServer) toolBlockList(args map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	textOnly := optionalBool(args, "text_only", false)
+	var styles map[string]bool
+	for _, style := range optionalStringSlice(args, "styles") {
+		if err := anytypefiles.CheckTextBlock(style, "", nil); err != nil {
+			return nil, err
+		}
+		if styles == nil {
+			styles = map[string]bool{}
+		}
+		styles[anytypefiles.CanonicalTextStyle(style)] = true
+	}
 	out := make([]map[string]any, 0, len(blocks))
 	for _, b := range blocks {
 		if textOnly && b.Kind != "text" {
+			continue
+		}
+		if styles != nil && (b.Kind != "text" || !styles[b.Style]) {
 			continue
 		}
 		entry := map[string]any{"id": b.ID, "kind": b.Kind}

@@ -135,6 +135,25 @@ def run(s):
     s.check("set-checked counts the object's checkboxes",
             ticked.get("checklist") == {"ticked": 3, "total": 3}, ticked.get("checklist"))
 
+    # A checklist read: only the chosen styles, in page order. The heading is
+    # created after the items but sits above them, and must be read that way.
+    head = s.c.call("block-create", space_id=s.space_id, object_id=lst, kind="text",
+                    target_id=anchor, style="header2", text="Abschnitt")["block_id"]
+    slim = s.c.call("block-list", space_id=s.space_id, object_id=lst, styles=["checkbox", "header2"])
+    s.check(
+        "block-list styles keeps only those styles, in page order",
+        [(b["style"], b["text"]) for b in slim["blocks"]]
+        == [("header2", "Abschnitt"), ("checkbox", "eins"), ("checkbox", "zwei"), ("checkbox", "drei")],
+        slim["blocks"],
+    )
+    s.check(
+        "block-list without styles is in page order too",
+        [b["id"] for b in s.blocks(lst) if b["id"] in (anchor, head, ids[0])] == [anchor, head, ids[0]],
+    )
+    status, _ = s.c.try_call("block-list", space_id=s.space_id, object_id=lst, styles=["nonsense"])
+    s.check("an unknown style in block-list is refused", status == "err")
+    s.c.call("block-delete", space_id=s.space_id, object_id=lst, block_ids=[head])
+
     status, _ = s.c.try_call(
         "block-set-checked", space_id=s.space_id, object_id=lst,
         block_ids=[ids[1], anchor], checked=False,
@@ -407,8 +426,8 @@ def run(s):
 def doc_order(s, object_id):
     """Text blocks below the header in document order, as (style, text).
 
-    block-list returns blocks in heart's storage order, which is not the order
-    on the page; only walking children_ids from the root gives that.
+    Walks children_ids from the root itself rather than trusting the order
+    block-list reports, so it can check that order too.
     """
     res = s.c.call("block-list", space_id=s.space_id, object_id=object_id)
     by_id = {b["id"]: b for b in res["blocks"]}

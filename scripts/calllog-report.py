@@ -119,9 +119,10 @@ def main():
         failed = sum(1 for e in es if e.get("ok") is False)
         size = [e.get("bytes", 0) for e in es]
         reused = sum(1 for e in es if e.get("reused"))
+        cut = sum(1 for e in es if e.get("cut"))  # answers shortened to the size budget, since v0.47
         rows.append((tool, len(es), f"{failed} ({100 * failed // len(es)}%)", pct(ms, 0.5), pct(ms, 0.95),
-                     f"{statistics.mean(size) / 1024:.1f}", reused))
-    table(rows, ("tool", "calls", "failed", "p50 ms", "p95 ms", "avg KB", "reused"))
+                     f"{statistics.mean(size) / 1024:.1f}", reused, cut))
+    table(rows, ("tool", "calls", "failed", "p50 ms", "p95 ms", "avg KB", "reused", "cut"))
 
     print(f"\n== Repeats (same tool and arguments within {REPEAT_WINDOW_S} s)")
     last, repeats = {}, collections.Counter()

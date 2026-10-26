@@ -43,7 +43,9 @@ func (s *mcpServer) usageToolDefs() []any {
 					"description": "Restrict to these type ids, from list-types-compact.",
 					"items":       map[string]any{"type": "string"},
 				},
-				"limit": map[string]any{"type": "integer", "description": "Maximum number of entries to return. Defaults to 100; the reported total is the true size of the bin.", "default": 100},
+				"query":  strProp("Only entries whose name or snippet contains this text, ignoring case."),
+				"offset": map[string]any{"type": "integer", "description": "Number of entries to skip.", "default": 0},
+				"limit":  map[string]any{"type": "integer", "description": "Maximum number of entries to return. Defaults to 100; the reported total is the true size of the bin.", "default": 100},
 			}),
 		},
 		map[string]any{
@@ -506,11 +508,21 @@ func (s *mcpServer) toolListArchived(args map[string]any) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
-	limit := optionalInt(args, "limit", 100)
-	if limit <= 0 {
-		limit = 100
+	offset, limit, err := paginationArgs(args, 100)
+	if err != nil {
+		return nil, err
 	}
-	shown := entries
+	matched := entries
+	query := strings.ToLower(optionalString(args, "query"))
+	if query != "" {
+		matched = nil
+		for _, entry := range entries {
+			if strings.Contains(strings.ToLower(entry.Name), query) || strings.Contains(strings.ToLower(entry.Snippet), query) {
+				matched = append(matched, entry)
+			}
+		}
+	}
+	shown := matched[min(offset, len(matched)):]
 	if len(shown) > limit {
 		shown = shown[:limit]
 	}
@@ -535,9 +547,14 @@ func (s *mcpServer) toolListArchived(args map[string]any) (map[string]any, error
 		"space_id": spaceID, "total": len(entries),
 		"objects": out, "shown": len(out),
 	}
-	if len(entries) > len(shown) {
-		result["note"] = fmt.Sprintf("showing %d of %d; raise limit to see more", len(shown), len(entries))
+	if query != "" {
+		result["matches"] = len(matched)
 	}
+	result["has_more"] = offset+len(out) < len(matched)
+	if result["has_more"] == true {
+		result["next_offset"] = offset + len(out)
+	}
+	s.capList(result, "objects", offset)
 	return result, nil
 }
 

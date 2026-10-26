@@ -502,6 +502,15 @@ iteration order would pick between them differently from run to run.
 `title` is the one style reported but not accepted: it is the object's name
 block, not a style to convert a paragraph into.
 
+### `ObjectShow` does not list blocks in page order
+
+It lists layout blocks before their content: smartblock, header and the
+layout divs, then the title and the blocks inside the divs. A block inserted later shows up
+near its place, but the list is not a walk of the page. `ReadBlocks` therefore
+sorts depth first along `children_ids`, and blocks the walk does not reach keep
+their place at the end. Only with that does `block-list styles=[...]` put a
+heading above its items.
+
 ### Blocks created one by one at the same target come out reversed
 
 Each `BlockCreate` with `position=bottom` lands directly below its target, so a

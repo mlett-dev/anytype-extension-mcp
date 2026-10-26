@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "anytype-extension-mcp"
-	serverVersion = "0.46.0"
+	serverVersion = "0.47.0"
 	protoVersion  = "2025-11-25"
 )
 
@@ -74,6 +74,7 @@ type serverConfig struct {
 	unsplashKey     string
 	renderURL       string // API of the anytype-render daemon; empty: object-render reports it is not set up
 	accountID       string // identity of the account the token belongs to; empty: unknown
+	responseBudget  int    // bytes a list tool may answer with; 0: no limit
 }
 
 type messageFraming int
@@ -123,6 +124,7 @@ func main() {
 		unsplashKey:     strings.TrimSpace(os.Getenv("UNSPLASH_ACCESS_KEY")),
 		renderURL:       strings.TrimSpace(os.Getenv("ANYTYPE_RENDER_URL")),
 		accountID:       accountIDFromEnv(),
+		responseBudget:  responseBudgetFromEnv(),
 	}
 
 	srv := &mcpServer{cfg: cfg}

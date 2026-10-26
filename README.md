@@ -180,6 +180,8 @@ the call and apply to every returned object — not inside `items`.
 - `ANYTYPE_CALL_LOG_DIR` — directory for the call log (see below); unset, no
   log is written. `ANYTYPE_CALL_LOG_DAYS` (default `30`) days are kept, and
   `AEM_CONSUMER` is written into every line to name who started the server
+- `ANYTYPE_RESPONSE_BUDGET_KB` (default `128`, `0` for no limit) — the most a
+  search or list answers with; see "List, search, and view tools"
 
 The Unsplash key is deliberately read by this server rather than passed to
 Anytype: anytype-heart authenticates with a Bearer header, which Unsplash
@@ -549,6 +551,14 @@ Do not put property names in `fields`, and do not put top-level fields such as
   the other objects, with one pagination over both. `include_files: false`
   restores the plain search. `list-objects-compact` still shows no file
   objects. Note that Anytype names file objects **without** their extension.
+- `search-space-compact`, `search-global-compact`, `list-objects-compact`,
+  `get-list-objects-compact` and `list-archived` stop at
+  `ANYTYPE_RESPONSE_BUDGET_KB` (128 KB). Past it the list is cut, `truncated`
+  gives `next_offset`, and `count` and `has_more` say so. One entry is always
+  returned, so paging moves on. Before the cap, single searches answered with
+  up to 1.8 MB, all of it kept in the model's context.
+- The search tools skip the Bin. A search that finds nothing says so in `hint`;
+  `list-archived` takes `query` and `offset` to look there.
 
 ## Partial updates
 
