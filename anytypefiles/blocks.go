@@ -502,6 +502,19 @@ func (c *Client) CreateTextBlock(ctx context.Context, objectID, targetID, positi
 	return resp.BlockId, nil
 }
 
+// CheckTextBlock reports what CreateTextBlock would reject, without writing,
+// so a caller inserting several blocks can refuse the batch before the first.
+func CheckTextBlock(style, position string, marks []MarkSpec) error {
+	if _, err := lookupEnum(textStyles, style, "block style", true); err != nil {
+		return err
+	}
+	if _, err := lookupEnum(blockPositions, position, "position", true); err != nil {
+		return err
+	}
+	_, err := marksToModel(marks)
+	return err
+}
+
 // SetBlockText replaces the text and inline marks of a text block.
 func (c *Client) SetBlockText(ctx context.Context, spaceID, objectID, blockID, text string, marks []MarkSpec) error {
 	if err := c.setBlockTextPending(ctx, objectID, blockID, text, marks); err != nil {

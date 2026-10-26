@@ -74,8 +74,73 @@ def run(s):
         "block-create", space_id=s.space_id, object_id=obj, kind="text",
         style="checkbox", text="Aufgabe",
     )["block_id"]
+    # block_id is the argument of the schema before v0.46; old clients send it.
     s.c.call("block-set-checked", space_id=s.space_id, object_id=obj, block_id=cb, checked=True)
-    s.check("block-set-checked applies", s.block(obj, cb)["checked"] is True)
+    s.check("block-set-checked applies (old block_id argument)", s.block(obj, cb)["checked"] is True)
+
+    # --- several blocks at one spot, in order ------------------------------
+    # Inserting one block at a time at the same target stacks them in
+    # reverse; items must come out in the order they were given.
+    lst = s.page("checklist")
+    anchor = s.c.call("block-create", space_id=s.space_id, object_id=lst, kind="text", text="ANKER")["block_id"]
+    s.c.call("block-create", space_id=s.space_id, object_id=lst, kind="text", text="DANACH")
+    made = s.c.call(
+        "block-create", space_id=s.space_id, object_id=lst, kind="text",
+        target_id=anchor, position="bottom", style="checkbox",
+        items=[{"text": "eins"}, {"text": "zwei", "checked": True}, {"text": "drei"},
+               {"text": "Notiz", "style": "paragraph"}],
+    )
+    ids = made.get("block_ids") or []
+    s.check("items answers with one id per item", len(ids) == 4, made)
+    s.check(
+        "items land in order after the target",
+        doc_order(s, lst) == [("paragraph", "ANKER"), ("checkbox", "eins"), ("checkbox", "zwei"),
+                              ("checkbox", "drei"), ("paragraph", "Notiz"), ("paragraph", "DANACH")],
+        doc_order(s, lst),
+    )
+    s.check("items inherit and override style and checked",
+            [s.block(lst, i).get("checked") for i in ids[:3]] == [False, True, False])
+
+    # Scattered additions to a list: each item may carry its own anchor, and
+    # one without follows the item before it.
+    scattered = s.c.call(
+        "block-create", space_id=s.space_id, object_id=lst, kind="text", style="checkbox",
+        items=[{"text": "vor eins", "target_id": ids[0], "position": "top"},
+               {"text": "nach drei", "target_id": ids[2]},
+               {"text": "danach"}],
+    )
+    s.check("items with their own anchors land there, in order",
+            [t for _, t in doc_order(s, lst)] == ["ANKER", "vor eins", "eins", "zwei", "drei",
+                                                  "nach drei", "danach", "Notiz", "DANACH"],
+            doc_order(s, lst))
+    s.c.call("block-delete", space_id=s.space_id, object_id=lst, block_ids=scattered["block_ids"])
+
+    status, _ = s.c.try_call(
+        "block-create", space_id=s.space_id, object_id=lst, kind="text",
+        items=[{"text": "gut"}, {"text": "kaputt", "style": "no-such-style"}],
+    )
+    s.check("a bad item refuses the whole batch",
+            status == "err" and "gut" not in [t for _, t in doc_order(s, lst)], status)
+
+    # --- ticking several checkboxes, answered from a read -----------------
+    ticked = s.c.call(
+        "block-set-checked", space_id=s.space_id, object_id=lst,
+        block_ids=[ids[0], ids[2], ids[0]], checked=True,
+    )
+    read = {b["id"]: b.get("checked") for b in s.blocks(lst)}
+    s.check("set-checked ticks every block", read[ids[0]] is True and read[ids[2]] is True, read)
+    s.check("set-checked answers with the read-back state, duplicates once",
+            [(b["id"], b["checked"]) for b in ticked["blocks"]] == [(ids[0], True), (ids[2], True)]
+            and "not_applied" not in ticked, ticked)
+    s.check("set-checked counts the object's checkboxes",
+            ticked.get("checklist") == {"ticked": 3, "total": 3}, ticked.get("checklist"))
+
+    status, _ = s.c.try_call(
+        "block-set-checked", space_id=s.space_id, object_id=lst,
+        block_ids=[ids[1], anchor], checked=False,
+    )
+    s.check("a non-checkbox id refuses the call before any write",
+            status == "err" and s.block(lst, ids[1])["checked"] is True, status)
 
     # --- paste parses markdown into real blocks ---------------------------
     target = s.page("paste")
@@ -337,3 +402,26 @@ def run(s):
 
     s.c.call("block-delete", space_id=s.space_id, object_id=obj, block_ids=[keep])
     s.check("block-delete removes the block", s.block(obj, keep) is None)
+
+
+def doc_order(s, object_id):
+    """Text blocks below the header in document order, as (style, text).
+
+    block-list returns blocks in heart's storage order, which is not the order
+    on the page; only walking children_ids from the root gives that.
+    """
+    res = s.c.call("block-list", space_id=s.space_id, object_id=object_id)
+    by_id = {b["id"]: b for b in res["blocks"]}
+    out = []
+
+    def walk(block_id):
+        b = by_id.get(block_id)
+        if not b or block_id == "header":
+            return
+        if b["kind"] == "text" and b.get("text"):
+            out.append((b.get("style"), b.get("text", "")))
+        for child in b.get("children_ids", []):
+            walk(child)
+
+    walk(res["root_block_id"])
+    return out

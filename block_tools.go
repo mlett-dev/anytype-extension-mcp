@@ -44,7 +44,7 @@ func (s *mcpServer) blockToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "block-create",
-			"description": "Insert a block into an object. kind=text covers paragraphs, headings, quotes, code, checkboxes, bullet and numbered lists, toggles and callouts; the other kinds insert a link to another object, a web bookmark, a divider or a table. Appends to the end unless target_id and position say otherwise. position=left or right puts the new block into a page column beside target_id instead of above or below it. Unlike block-move, position=inner is not checked against the target: this nests under a plain heading too, which block-move refuses unless convert_target_to_toggle is passed.",
+			"description": "Insert a block into an object. kind=text covers paragraphs, headings, quotes, code, checkboxes, bullet and numbered lists, toggles and callouts; the other kinds insert a link to another object, a web bookmark, a divider or a table. Appends to the end unless target_id and position say otherwise. items inserts several text blocks in one call, in the given order. position=left or right puts the new block into a page column beside target_id instead of above or below it. Unlike block-move, position=inner is not checked against the target: this nests under a plain heading too, which block-move refuses unless convert_target_to_toggle is passed.",
 			"inputSchema": restSchema([]string{"space_id", "object_id"}, map[string]any{
 				"space_id":      spaceIDProp(),
 				"object_id":     strProp("Object to insert into."),
@@ -59,6 +59,21 @@ func (s *mcpServer) blockToolDefs() []any {
 					"type":        "array",
 					"description": "For kind=text: inline marks. " + blockMarkRangeDescription,
 					"items":       markSpecSchema(),
+				},
+				"items": map[string]any{
+					"type":        "array",
+					"description": "For kind=text, instead of text and marks: several blocks in one call. An item without its own target_id goes below the item before it (the first one to target_id/position above), so the order is kept. style and checked above apply to items that do not set their own.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"text":      map[string]any{"type": "string"},
+							"target_id": map[string]any{"type": "string"},
+							"position":  map[string]any{"type": "string", "enum": enumProp("", anytypefiles.BlockPositionNames())["enum"]},
+							"style":     map[string]any{"type": "string", "enum": enumProp("", anytypefiles.TextStyleNames())["enum"]},
+							"checked":   map[string]any{"type": "boolean"},
+							"marks":     map[string]any{"type": "array", "items": markSpecSchema()},
+						},
+					},
 				},
 				"linked_object_id": strProp("For kind=link: the object to link to."),
 				"url":              strProp("For kind=bookmark: the URL to bookmark and fetch a preview for."),
@@ -98,12 +113,16 @@ func (s *mcpServer) blockToolDefs() []any {
 		},
 		map[string]any{
 			"name":        "block-set-checked",
-			"description": "Tick or untick a checkbox block. This is the block-level equivalent of clicking the checkbox in the GUI; rewriting the markdown body would lose the block id.",
-			"inputSchema": restSchema([]string{"space_id", "object_id", "block_id", "checked"}, map[string]any{
+			"description": "Tick or untick checkbox blocks, like clicking them in the GUI; rewriting the markdown body would lose the block ids. Answers with the state read back and the object's ticked/total count, so no block-list is needed to confirm.",
+			"inputSchema": restSchema([]string{"space_id", "object_id", "block_ids", "checked"}, map[string]any{
 				"space_id":  spaceIDProp(),
-				"object_id": strProp("Object containing the block."),
-				"block_id":  strProp("Checkbox block id from block-list."),
-				"checked":   map[string]any{"type": "boolean", "description": "New checkbox state."},
+				"object_id": strProp("Object containing the blocks."),
+				"block_ids": map[string]any{
+					"type":        "array",
+					"description": "Checkbox block ids from block-list.",
+					"items":       map[string]any{"type": "string"},
+				},
+				"checked": map[string]any{"type": "boolean", "description": "New state for all of them."},
 			}),
 		},
 		map[string]any{
@@ -534,6 +553,23 @@ func (s *mcpServer) toolBlockCreate(args map[string]any) (map[string]any, error)
 	position := optionalString(args, "position")
 	ctx := context.Background()
 
+	if raw, ok := args["items"]; ok && raw != nil {
+		if kind != "text" {
+			return nil, fmt.Errorf("items is for kind=text only")
+		}
+		if marks, _ := marksFromArgs(args, "marks"); optionalString(args, "text") != "" || len(marks) > 0 {
+			return nil, fmt.Errorf("pass text and marks inside each item, not beside items")
+		}
+		ids, err := createTextBlocks(ctx, client, objectID, targetID, position, args, raw)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"space_id": spaceID, "object_id": objectID,
+			"block_ids": ids, "kind": kind, "created": true,
+		}, nil
+	}
+
 	var blockID string
 	switch kind {
 	case "text":
@@ -602,6 +638,77 @@ func (s *mcpServer) toolBlockCreate(args map[string]any) (map[string]any, error)
 	}, nil
 }
 
+// createTextBlocks inserts the items of block-create in order. An item may
+// name its own target, so scattered additions to a list take one call. One
+// without goes below the item before it, or for the first item to the call's
+// target and position. Sending several to the same target would stack them in
+// reverse, because each new block lands directly next to the target.
+//
+// Every item is checked before the first write, so a bad style or mark in the
+// last item does not leave the others half inserted.
+func createTextBlocks(ctx context.Context, client *anytypefiles.Client, objectID, targetID, position string, args map[string]any, raw any) ([]string, error) {
+	items, err := asObjectSlice(raw)
+	if err != nil {
+		return nil, fmt.Errorf("items: %w", err)
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("items is empty")
+	}
+	type textBlock struct {
+		style, text, target, position string
+		checked                       bool
+		marks                         []anytypefiles.MarkSpec
+	}
+	defaultStyle := optionalString(args, "style")
+	defaultChecked := optionalBool(args, "checked", false)
+	if err := anytypefiles.CheckTextBlock(defaultStyle, position, nil); err != nil {
+		return nil, err
+	}
+	blocks := make([]textBlock, len(items))
+	for i, item := range items {
+		b := textBlock{
+			style:    defaultStyle,
+			text:     optionalString(item, "text"),
+			target:   optionalString(item, "target_id"),
+			position: optionalString(item, "position"),
+			checked:  optionalBool(item, "checked", defaultChecked),
+		}
+		if b.target == "" && b.position != "" {
+			return nil, fmt.Errorf("items[%d]: position needs a target_id in the same item", i)
+		}
+		if style := optionalString(item, "style"); style != "" {
+			b.style = style
+		}
+		if b.marks, err = marksFromArgs(item, "marks"); err != nil {
+			return nil, fmt.Errorf("items[%d]: %w", i, err)
+		}
+		if err := anytypefiles.CheckTextBlock(b.style, b.position, b.marks); err != nil {
+			return nil, fmt.Errorf("items[%d]: %w", i, err)
+		}
+		blocks[i] = b
+	}
+
+	ids := make([]string, 0, len(blocks))
+	for i, b := range blocks {
+		target, pos := b.target, b.position
+		if target == "" {
+			target, pos = targetID, position
+			if i > 0 {
+				target, pos = ids[i-1], "bottom"
+			}
+		}
+		id, err := client.CreateTextBlock(ctx, objectID, target, pos, b.style, b.text, b.checked, b.marks)
+		if err != nil {
+			if len(ids) > 0 {
+				return nil, fmt.Errorf("items[%d]: %w; the items before it were created as %v", i, err, ids)
+			}
+			return nil, fmt.Errorf("items[%d]: %w", i, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 func (s *mcpServer) toolBlockSetText(args map[string]any) (map[string]any, error) {
 	blockID, err := requiredString(args, "block_id")
 	if err != nil {
@@ -658,10 +765,20 @@ func (s *mcpServer) toolBlockTurnInto(args map[string]any) (map[string]any, erro
 	}, nil
 }
 
+// toolBlockSetChecked ticks several checkboxes and answers with what a read
+// shows afterwards. Without that, a client ticking items one call at a time
+// read the whole object again after every round just to confirm (see the call
+// log of a 62-item checklist: 9 block-list calls of up to 33 KB on it, five
+// of them only to confirm).
 func (s *mcpServer) toolBlockSetChecked(args map[string]any) (map[string]any, error) {
-	blockID, err := requiredString(args, "block_id")
-	if err != nil {
-		return nil, err
+	blockIDs := optionalStringSlice(args, "block_ids")
+	// block_id is what the schema offered up to v0.45; a client holding the
+	// old schema keeps working.
+	if id := optionalString(args, "block_id"); id != "" {
+		blockIDs = append(blockIDs, id)
+	}
+	if len(blockIDs) == 0 {
+		return nil, fmt.Errorf("block_ids is required")
 	}
 	raw, ok := args["checked"]
 	if !ok {
@@ -676,14 +793,76 @@ func (s *mcpServer) toolBlockSetChecked(args map[string]any) (map[string]any, er
 		return nil, err
 	}
 	defer client.Close()
+	ctx := context.Background()
 
-	if err := client.SetBlockChecked(context.Background(), objectID, blockID, checked); err != nil {
+	// Everything is checked before the first write. heart sets the flag on any
+	// text block, where the GUI never shows it, so a wrong id would otherwise
+	// report success and change nothing visible.
+	before, _, err := client.ReadBlocks(ctx, spaceID, objectID)
+	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
-		"space_id": spaceID, "object_id": objectID, "block_id": blockID,
-		"checked": checked, "updated": true,
-	}, nil
+	styles := make(map[string]string, len(before))
+	for _, b := range before {
+		styles[b.ID] = b.Style
+	}
+	seen := make(map[string]bool, len(blockIDs))
+	unique := make([]string, 0, len(blockIDs))
+	for _, id := range blockIDs {
+		style, found := styles[id]
+		switch {
+		case !found:
+			return nil, fmt.Errorf("block %s is not in this object; take the ids from block-list", id)
+		case style != "checkbox":
+			return nil, fmt.Errorf("block %s has style %q, not checkbox; nothing was changed", id, style)
+		}
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+
+	for i, id := range unique {
+		if err := client.SetBlockChecked(ctx, objectID, id, checked); err != nil {
+			if i > 0 {
+				return nil, fmt.Errorf("block %s: %w; already set: %v", id, err, unique[:i])
+			}
+			return nil, err
+		}
+	}
+
+	after, _, err := client.ReadBlocks(ctx, spaceID, objectID)
+	if err != nil {
+		return nil, fmt.Errorf("written, but the read-back failed: %w", err)
+	}
+	byID := make(map[string]anytypefiles.BlockInfo, len(after))
+	ticked, total := 0, 0
+	for _, b := range after {
+		byID[b.ID] = b
+		if b.Kind == "text" && b.Style == "checkbox" {
+			total++
+			if b.Checked {
+				ticked++
+			}
+		}
+	}
+	blocks := make([]map[string]any, 0, len(unique))
+	var notApplied []string
+	for _, id := range unique {
+		b := byID[id]
+		blocks = append(blocks, map[string]any{"id": id, "text": b.Text, "checked": b.Checked})
+		if b.Checked != checked {
+			notApplied = append(notApplied, id)
+		}
+	}
+	out := map[string]any{
+		"space_id": spaceID, "object_id": objectID, "checked": checked,
+		"blocks": blocks, "checklist": map[string]any{"ticked": ticked, "total": total},
+	}
+	if len(notApplied) > 0 {
+		out["not_applied"] = notApplied
+	}
+	return out, nil
 }
 
 func (s *mcpServer) toolBlockMark(args map[string]any) (map[string]any, error) {

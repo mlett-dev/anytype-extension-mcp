@@ -502,6 +502,30 @@ iteration order would pick between them differently from run to run.
 `title` is the one style reported but not accepted: it is the object's name
 block, not a style to convert a paragraph into.
 
+### Blocks created one by one at the same target come out reversed
+
+Each `BlockCreate` with `position=bottom` lands directly below its target, so a
+second block sent to the same target sits between the target and the first one.
+Seen in a ChatGPT session that added checklist items this way: two items meant
+as A, B ended up as B, A. `block-create` with `items` sends only the first item
+to the caller's target and each later one below the item before it.
+
+### `BlockTextSetChecked` works on any text block
+
+Ticking a paragraph succeeds, and `block-list` shows nothing, because the flag
+is only reported for checkboxes. It is stored all the same: turning the
+paragraph into a checkbox later brings it back ticked. `block-set-checked`
+therefore refuses an id whose block is not a checkbox, before writing anything.
+
+The tool answers from a read-back, with the object's ticked/total count. A
+client that ticked one item per call used to read the whole object again after
+each round just to confirm: 9 `block-list` calls of up to 33 KB on one 62-item
+list, five of them only to confirm or repeat a read.
+
+`block-create` items may also carry their own `target_id`, because additions to
+a list are scattered: in the same session 14 single inserts went to 11
+different targets.
+
 ---
 
 ## Tables
